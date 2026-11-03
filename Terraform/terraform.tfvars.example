@@ -1,0 +1,113 @@
+#######################################################
+###   Example variable overrides for this project   ###
+#######################################################
+#
+# HOW TO USE THIS FILE:
+#   1. Copy it:  cp terraform.tfvars.example terraform.tfvars
+#   2. Edit terraform.tfvars and uncomment/change only the values you want
+#      to override. Anything left commented out (or left out of the file
+#      entirely) falls back to the default set in variables.tf.
+#   3. Run terraform plan / apply as normal - terraform.tfvars loads
+#      automatically, no flags needed.
+#
+# This .example file is the one that stays in the repo, as documentation.
+#
+# Every value here is validated in variables.tf - an invalid value stops
+# terraform plan with a clear error before any AWS resource is touched.
+#
+# DO NOT set bastion-ip-host-num, kube-master-ip-start, or
+# kube-worker-ip-start here - all three are pinned by design and
+# validation will reject any value other than their default. See the
+# NOTE ON KUBE NODE IP RANGES in variables.tf for why.
+#
+#------------------------------------------------------
+
+# ---- Region ----
+
+# AWS region to deploy into. Default: eu-west-1 (Ireland).
+# Changing this may also require changing the AMI variables further down -
+# see the README for a step-by-step guide before changing this.
+# aws-region = "eu-west-1"
+
+
+# ---- Networking ----
+
+# CIDR block for the whole VPC. Default: 10.10.0.0/16
+# Must be large enough to contain both subnets below.
+# vpc-cidr = "10.10.0.0/16"
+
+# CIDR block for the public subnet (bastion + load balancer live here).
+# Must be a /24 inside vpc-cidr - the bastion's fixed IP (.11) assumes it.
+# pub-sub-01-cidr = "10.10.10.0/24"
+
+# CIDR block for the private subnet (Kube nodes live here).
+# Must be a /24 inside vpc-cidr, and must not overlap pub-sub-01-cidr -
+# the fixed master (.11-.19) and worker (.21-.39) IP ranges assume it.
+# You CAN move this to a different /24 (e.g. 10.10.30.0/24), just keep
+# the prefix length at /24.
+# priv-sub-01-cidr = "10.10.20.0/24"
+
+
+# ---- SSH access ----
+
+# Local filename the generated SSH private key is written to.
+# ssh-file-name = "demo-ssh-key.pem"
+
+# SSH username baked into the Ubuntu AMI. Change only if you also change
+# the AMI to one with a different default login user.
+# ec2-user-name = "ubuntu"
+
+
+# ---- Bastion host ----
+
+# EC2 instance type for the bastion.
+# bastion-node-size = "t3.micro"
+
+# Root disk size (GB) for bastion node. Minimum 20.
+# bastion-node-disk-size = 100
+
+# ---- Kubernetes cluster shape ----
+
+# Number of master (control-plane) nodes. Must be 1 or 3 (etcd quorum).
+# kube-master-count = 1
+
+# Number of worker nodes. Must be between 1 and 19 (fixed IP range .21-.39).
+# kube-worker-count = 2
+
+
+# ---- Kube node sizing ----
+
+# EC2 instance type for master node(s).
+# kube-master-node-size = "t3.medium"
+
+# EC2 instance type for worker nodes.
+# kube-worker-node-size = "t3.xlarge"
+
+# Root disk size (GB) for every Kube node. Minimum 20.
+# kube-node-disk-size = 100
+
+
+# ---- OS / AMI selection ----
+# These five values work together - see the NOTE ON AMI VARIABLES in
+# variables.tf, and the README for a step-by-step guide, before changing
+# any of them.
+
+# AWS account ID that publishes the AMI. Default is Canonical's (Ubuntu).
+# os-ami-owner = "099720109477"
+
+# Name filter for the AMI lookup - change this to move Ubuntu releases.
+# os-ami-name = "ubuntu/images/hvm-ssd-gp3/ubuntu-resolute-26.04-amd64-server-*"
+
+# Virtualization type filter. "hvm" or "paravirtual".
+# os-ami-virtualization-type = "hvm"
+
+# Architecture filter. "x86_64", "arm64", or "i386".
+# os-ami-architecture = "x86_64"
+
+# Root device type filter. "ebs" or "instance-store".
+# os-ami-root-device-type = "ebs"
+
+# ---- RKE2 ----
+
+# Install RKE2 on all nodes at first boot (Calico, VXLAN mode). Default: true
+# install-rke2 = true
