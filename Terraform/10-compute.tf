@@ -158,29 +158,6 @@ resource "aws_instance" "bastion-01" {
     }
   }
 
-  # Copy the scripts folder to the ubuntu user's home directory
-  provisioner "file" {
-    source      = "k8s-scripts/"
-    destination = "k8s-scripts"
-    connection {
-      type        = "ssh"
-      user        = var.ec2-user-name
-      private_key = tls_private_key.ssh-key-pair-local-01.private_key_pem
-      host        = self.public_ip
-    }
-  }
-
-  # Make every script executable
-  provisioner "remote-exec" {
-    inline = ["chmod +x k8s-scripts/* 2>/dev/null || true"]
-    connection {
-      type        = "ssh"
-      user        = var.ec2-user-name
-      private_key = tls_private_key.ssh-key-pair-local-01.private_key_pem
-      host        = self.public_ip
-    }
-  }
-
   user_data = <<-EOT
     #!/bin/bash
     set -eo pipefail
