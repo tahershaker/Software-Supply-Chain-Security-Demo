@@ -238,7 +238,7 @@ variable "ec2-user-name" {
 #-------------------------
 #
 # NOTE: bastion-ip-host-num defaults to 11
-# NOTE: bastion-node-size defaults to t3.micro
+# NOTE: bastion-node-size defaults to t3.medium
 #
 # bastion-ip-host-num is a host offset, not a literal address - the same
 # pattern as kube-master-ip-start / kube-worker-ip-start below. 10-compute.tf
@@ -261,7 +261,7 @@ variable "bastion-ip-host-num" {
 variable "bastion-node-size" {
   description = "EC2 instance type for the bastion host"
   type        = string
-  default     = "t3.micro"
+  default     = "t3.medium"
 
   validation {
     condition     = can(regex("^[a-z0-9]+\\.[a-z0-9]+$", var.bastion-node-size))

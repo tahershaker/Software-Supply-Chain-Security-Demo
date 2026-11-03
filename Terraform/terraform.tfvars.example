@@ -61,7 +61,7 @@
 # ---- Bastion host ----
 
 # EC2 instance type for the bastion.
-# bastion-node-size = "t3.micro"
+# bastion-node-size = "t3.medium"
 
 # Root disk size (GB) for bastion node. Minimum 20.
 # bastion-node-disk-size = 100

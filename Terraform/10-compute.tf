@@ -232,24 +232,6 @@ resource "aws_instance" "bastion-01" {
     echo " ---------------------------------"
   EOT
 
-  user_data = <<-EOT
-    #!/bin/bash
-    set -e
-
-    NODE_NAME=${local.bastion-name}
-
-    # Set static hostname
-    hostnamectl set-hostname --static "$NODE_NAME"
-
-    # Add every node to /etc/hosts
-    cat >> /etc/hosts <<'HOSTS'
-    ${local.hosts-block}
-    HOSTS
-
-    # Keep the hostname after reboot (AWS static hostname guide)
-    echo "preserve_hostname: true" > /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
-  EOT
-
   tags = {
     Name       = local.bastion-name
     DeployedBy = "TerraForm"
