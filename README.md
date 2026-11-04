@@ -551,3 +551,93 @@ chmod +x scan.sh
 If a scanner finds nothing for a severity, that severity does not appear in the count. If nothing is printed under a scanner, it found nothing.
 
 ---
+
+## Section 2: Check the code (shift left)
+
+We have the application. The normal next step would be to build it. But let us ask a better question first: **is this code good enough to be built?** In a DevSecOps pipeline, security checks run on every code change, and a failed check stops the build. The reason is simple. A problem found in the code is cheap to fix. A problem found in a running image is not. So we do the same checks by hand, before we build anything.
+
+We run three checks. One is SAST, which reads our own code. Two are SCA, which look at the libraries.
+
+### Step 2.1: Check our own code with SAST
+
+We use `gosec`, a SAST tool for Go. It reads the source code and looks for risky patterns, for example weak cryptography, hard-coded passwords or unsafe use of the network. We run it inside a Go container.
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/app:/src" -w /src golang:latest \
+  sh -c 'go install github.com/securego/gosec/v2/cmd/gosec@latest && gosec ./...' \
+  | tee reports/code/gosec-before.txt
+```
+
+![section-2-step-1](Images/section-2-step-1.png)
+
+Read the summary at the end. It shows the number of files, lines and issues. In our case, gosec checked 1 file with 15 lines, and it found 1 issue. The issue has a rule number (`G104`), a severity (`LOW`), and the file and line (`main.go`, line 14). It points to `r.Run()`, the line that starts the web server. This function can return an error, for example if the port is already in use, and our code does not check it. This is a code quality problem and not a security hole, which is why the severity is low. For an application of 15 lines, one small finding like this is normal. But do not stop here. SAST looks only at our own code. It does not look at the libraries, and our application uses many.
+
+### Step 2.2: Check the libraries with govulncheck
+
+This is the first SCA check. `govulncheck` is the official Go tool for known vulnerabilities. It does something that many scanners do not: it checks if our code really calls the vulnerable function. This is called reachability.
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/app:/src" -w /src golang:latest \
+  sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...' \
+  | tee reports/code/govulncheck-before.txt
+```
+
+![section-2-step-2](Images/section-2-step-2.png)
+
+Read the output. The first part lists the vulnerabilities that our code really calls. These are the real risk. Our scan found 11 of them. Each entry has an ID (like `GO-2026-6617`), a short title, the library, the installed version, and the version that fixes it. All 11 come from one library, `golang.org/x/net`, and we use a version from 2021. Under each entry, there is a list of traces. They show how our code reaches the problem: `main.go` calls Gin, and Gin calls the HTTP/2 code in this library. The traces are long, so the full output is saved in the file [govulncheck-before.txt](/Scan-Outputs/govulncheck-before.txt).
+
+The summary at the end is the most important part. It says that our code is affected by 11 vulnerabilities from 1 module. It also says that the scan found 8 more vulnerabilities in packages that we import, and 44 in modules that we require, but our code does not appear to call them. These have a lower priority. A scanner that only lists what is installed would show all 63. `govulncheck` shows which 11 matter most.
+
+The fix is clear. The newest fix for these 11 is in version `v0.60.0` of `golang.org/x/net`, so one update to this version, or a newer one, removes all of them.
+
+### Step 2.3: Check the libraries with Trivy
+
+The second SCA check is Trivy. It reads `go.mod` and `go.sum`, and lists every library that has a known vulnerability, whether our code calls it or not. A second tool gives a second opinion.
+
+```bash
+trivy fs app/ | tee reports/code/trivy-fs-before.txt
+```
+
+![section-2-step-3](Images/section-2-step-3.png)
+
+Trivy found **64 vulnerabilities** in `go.mod`: 32 HIGH, 27 MEDIUM and 5 UNKNOWN, with no CRITICAL or LOW. The full output is saved in `Scan-Outputs/trivy-fs-before.txt`.
+
+To read the table, look at four columns for each row: the library, the severity, the installed version and the fixed version. Here, all 64 findings sit in six libraries, and every one has a fixed version available. Most come from the old `golang.org/x/*` libraries, mainly `x/crypto` and `x/net`, so updating those libraries removes most of the findings.
+
+Trivy and govulncheck find almost the same vulnerable versions: 64 for Trivy and 63 for govulncheck. The difference is what they do next. Trivy stops at the list. govulncheck checks whether the code calls the vulnerable function, and only **11 of its 63** are reachable (the other 8 are in imported packages and 44 in required modules that the code does not call). So Trivy tells us what is installed, and govulncheck tells us what to fix first.
+
+### Step 2.4: Summary and thoughts
+
+**Summary:** The code scan found a small problem in our own code. The library scans found many more problems in the libraries we depend on. We have not built any image yet, so this is only the first part of the picture.
+
+| Check | Tool | What it looks at | Result |
+|:---|:---|:---|:---|
+| SAST | gosec | Our own code | `<N>` issue(s) (G104: unhandled error) |
+| SCA (reachability) | govulncheck | Libraries that our code calls | 63 found, **11 reachable**, all in `golang.org/x/net` |
+| SCA (all libraries) | Trivy | Every library in `go.mod` | **64 found**: 32 HIGH, 27 MEDIUM, 5 UNKNOWN, 0 CRITICAL |
+
+**What we found**
+
+- Our own code has only a small issue, and the fix is one line.
+- The libraries carry most of the risk. Both SCA tools agree that the libraries are old and vulnerable (64 for Trivy, 63 for govulncheck).
+- A fixed version exists for every one of them. Nothing here is waiting for a patch.
+
+**Is it fixable, and at what cost?**
+
+We need to fix these findings. The goal is that our application does not ship an exploitable weakness, and that it meets security best practice. So for each issue, we need to think about the fix and what it costs us.
+
+> **Issue 1: Unhandled error in our code (gosec G104)**
+- **Fix:** Check the error that `r.Run()` returns, and log it.
+- **Cost:** Low. It is one line, and it is our own code.
+
+> **Issue 2: The 11 reachable vulnerabilities in `golang.org/x/net` (govulncheck)**
+- **Fix:** Update `golang.org/x/net` to v0.60.0 or newer.
+- **Cost:** Low to medium. The change is small, but the old version is from 2021, so the jump is big. We must rebuild and test the app after it.
+
+> **Issue 3: The other 53 findings in `go.mod` (Trivy)**
+- **Fix:** Update the libraries to the fixed versions: `gin` 1.9.1, `golang.org/x/crypto` (latest), `golang.org/x/net` 0.62.0, `golang.org/x/sys` 0.44.0, `golang.org/x/text` 0.41.0 and `google.golang.org/protobuf` 1.33.0. One `go get -u ./...` followed by `go mod tidy` does this.
+- **Cost:** Low to medium, for the same reason: rebuild and test. The bigger cost is that this work never ends. New CVEs appear every month, so we must repeat it.
+
+In a real pipeline, the story would stop here. The pipeline would fail, and nobody would build the image until the problems are fixed. In this demo, we continue on purpose, only to learn. We will **not fix yet**. We want to see the full picture first, then fix everything in one go in Step 5.
+
+---
