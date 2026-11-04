@@ -196,16 +196,26 @@ This is a short overview of what we do and why we do it. The detailed commands a
 
 To follow the application from source code to a running service, we need three things: a place to build and check images, a place to run them, and a place to keep them. So we build a small environment on AWS.
 
+To make this easy, this repository includes a Terraform script. You can use it to create the environment, with the components and the architecture described in this section. The script is a copy of the one in [this repository](https://github.com/tahershaker/Kubernetes-Hands-On-Demo-On-AWS/tree/main/01-Provision), with some edits that make the step-by-step work easier to start. We added a cloud-init script to the EC2 instances, which installs and configures an RKE2 cluster automatically. We also added a setup to the bastion node, which installs `kubectl` and `helm` on it.
+
+The Terraform script has a variables file and a `tfvars.example` file, so you can customize it if you want. In this demo, we use the default values. If you want to customize it, see [the customization section of the main repository](https://github.com/tahershaker/Kubernetes-Hands-On-Demo-On-AWS/tree/main/01-Provision#customization).
+
+At a high level, the script creates:
+
+* **One VPC with two subnets, one public and one private.** The public subnet holds the bastion node, the network load balancer and the NAT gateway. It is connected to the internet gateway, so it has direct access to the internet. The private subnet holds the three nodes of the RKE2 Kubernetes cluster that we use in this demo.
+* **Routing, security rules and load balancing.** The script also sets all of these.
+* **An SSH key.** The script creates it and saves it in the same folder as the script, so you can use it to connect to the bastion node. The same key is also in the home directory of the bastion node, so you can connect from there to the other instances.
+
+The diagram below shows the high-level architecture of this environment.
+
 ![High-level architecture](Images/demo-architecture.png)
 
-> **PLACEHOLDER:** add the high-level architecture picture here. It should show one VPC, a public subnet (bastion, load balancer, NAT gateway), a private subnet (1 master node and 2 worker nodes), and the traffic flow.
-
-## What each part is used for
+> **What each part is used for**
 
 | Part | What it is used for |
 |:---|:---|
 | **Bastion** | The only machine with SSH access from the internet. It is also our work desk. We check the code, build container images, run the scanners, create SBOMs, sign images, and run `kubectl` and Helm from here. A Linux machine with a fixed setup makes our work repeatable. |
-| **Kubernetes master node** | The control plane of the cluster. It decides where applications run and keeps the state of the cluster. |
+| **Kubernetes master node** | The control plane of the cluster. |
 | **Kubernetes worker nodes (2)** | They run the workloads: Harbor and, later, our application. |
 | **Harbor** | Deployed on Kubernetes with Helm. It is our private registry. It stores our images, scans them for vulnerabilities, shows SBOMs and signatures, and can block images that break our rules. |
 | **Local storage provisioner** | Gives the cluster disk space from the nodes. Harbor needs it to store images and its database. |
@@ -215,7 +225,7 @@ To follow the application from source code to a running service, we need three t
 
 The traffic flow is simple. A request comes from the internet to the load balancer. The load balancer sends it to the ingress controller on a node. The ingress controller sends it to Harbor or to the application.
 
-## Components created by Terraform
+> **Components created by Terraform**
 
 | Component | Count | Details |
 |:---|:---|:---|
@@ -227,16 +237,210 @@ The traffic flow is simple. A request comes from the internet to the load balanc
 | Route tables | 2 | One for each subnet |
 | Security groups | 2 | One for the public subnet and one for the private subnet |
 | Network Load Balancer | 1 | Internet-facing, with listeners on ports 80 and 443 |
-| EC2 instances | 4 | 1 bastion (`t3.medium`, 100 GB disk), 1 master (`t3.medium`), 2 workers (`t3.xlarge`). Nodes have 100 GB disks. |
+| EC2 instances | 4 | 1 bastion (`t3.medium`), 1 master (`t3.medium`), 2 workers (`t3.xlarge`). All nodes have 100 GB disks. |
 | SSH key pair | 1 | Created by Terraform. You do not need to bring your own key. |
 | RKE2 | 3 nodes | Installed and configured automatically on the master and the two workers |
 
 These are the default values of the Terraform script.
 
-## How it is deployed
+---
 
-The environment is deployed by the Terraform script in the `Terraform/` folder of this repository. For more information about this Terraform, please refer to [Kubernetes-Hands-On-Demo-On-AWS / 01-Provision](https://github.com/tahershaker/Kubernetes-Hands-On-Demo-On-AWS/tree/main/01-Provision).
+## Deploying the Environment
 
-The Terraform in this repository is based on the one in that link. We made some edits. The main one is a cloud-init script that installs and configures RKE2 automatically on the three cluster nodes. It also installs `kubectl` and Helm on the bastion.
+Before we start the software supply chain security demo and the step-by-step work, we deploy the environment that we described in the previous section. In this section, we deploy the AWS environment with the Terraform script, check that everything is up, and install Harbor on the Kubernetes cluster.
+
+> **Note:** The deployment uses the **default values** of the Terraform script. If you want to change something, for example the region or the size of the nodes, see the [customization guide](https://github.com/tahershaker/Kubernetes-Hands-On-Demo-On-AWS/tree/main/01-Provision#customization).
+
+> **Prerequisites**
+
+To use the Terraform script, you need the following tools installed and configured on your laptop:
+
+* **Terraform**, version 1.9 or newer. Check it with `terraform -v`.
+* **The AWS CLI**, configured with credentials that can create VPCs, EC2 instances and load balancers.
+* **Git**.
+* **Outbound internet access**, so Terraform can download its providers.
+
+Steps 1 to 5 run on your laptop. Steps 6 to 12 run on the bastion.
+
+## Step 1: Clone this repository
+
+We start by getting the code. The Terraform files are in the `Terraform/` folder.
+
+```bash
+git clone https://github.com/tahershaker/Software-Supply-Chain-Security-Demo.git
+cd Software-Supply-Chain-Security-Demo/Terraform
+```
+
+## Step 2: Initialize, validate, and review the Terraform plan
+
+`init` downloads the providers that Terraform needs. `validate` checks the files for errors. It does not touch AWS. The plan shows what Terraform will create, before it creates anything. It is worth reading the output.
+
+```bash
+terraform init
+terraform validate
+terraform plan -out=tfplan
+```
+
+## Step 3: Apply
+
+This step creates everything in your AWS account. It can take several minutes.
+
+```bash
+terraform apply tfplan
+```
+
+![terraform-apply](Images/terraform-apply.png)
+
+## Step 4: Save the outputs
+
+When the apply ends, Terraform prints the bastion address, the load balancer address, the SSH key name and the IP address of every node. Save them. You can print them again at any time:
+
+```bash
+terraform output
+```
+
+![terraform-output](Images/terraform-output.png)
+
+## Step 5: Connect to the bastion
+
+Terraform saved the SSH key in the `Terraform/` folder. The file name starts with a random prefix, so use the name shown in the outputs. The user name is `ubuntu`. Before you SSH, make sure that the EC2 instances are in a running state using the AWS console.
+
+![aws-ec2-instance](Images/aws-ec2-instance.png)
+
+```bash
+ssh -i <path-to-ssh-key> ubuntu@<bastion-public-ip>
+```
+
+![bastion-ssh](Images/bastion-ssh.png)
+
+## Step 6: Wait for the first setup to finish
+
+When the instances start, a cloud-init script runs on each of them. On the bastion, it installs `kubectl` and Helm. This takes a few minutes. This command waits until it is done.
+
+```bash
+cloud-init status --wait
+```
+
+> Expect: status: done
+
+## Step 7: Give the bastion access to the cluster
+
+The cluster credentials are on the master node. We copy them to the bastion, so we can run `kubectl` and Helm from here. The file points to `127.0.0.1`, which is only correct on the master. So we change it to the private IP of the master.
+
+```bash
+mkdir -p ~/.kube
+scp -i ~/demo-ssh-key.pem -o StrictHostKeyChecking=accept-new ubuntu@demo-kube-master-01:/etc/rancher/rke2/rke2.yaml ~/.kube/config
+sed -i 's/127.0.0.1/10.10.20.11/' ~/.kube/config
+```
+
+![bastion-kubeconfig](Images/bastion-kubeconfig.png)
+
+## Step 8: Check the cluster
+
+All three nodes must be `Ready`. The nodes can need a few more minutes after the instances start, so run the command again if you see fewer than three.
+
+```bash
+kubectl get nodes -o wide
+```
+
+![kube-cluster-status](Images/kube-cluster-status.png)
+
+Then check that the system pods are running. All pods should be `Running` or `Completed`.
+
+```bash
+kubectl get pods -A
+```
+
+![nodes-ready](Images/nodes-ready.png)
+
+## Step 10: Install the local storage provisioner
+
+Harbor needs disk space for its images and its database. RKE2 does not give us a storage class by default. So we install a small component that creates disk space on a node when an application asks for it. Then we make it the default.
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml
+kubectl patch storageclass local-path -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+```
+
+The storage class `local-path` should now be marked `(default)`:
+
+```bash
+kubectl get storageclass
+```
+
+![storagecalss-status](Images/storagecalss-status.png)
+
+> The data lives on the disk of the node. If the node is replaced, the data is lost. This is fine for a demo.
+
+## Step 11: Install Harbor with Helm
+
+Helm is the package manager of Kubernetes. A Helm chart is a ready-made package. The Harbor team publishes a chart, so we add their repository and install from it.
+
+First, we set the values that we need as variables, so we can copy and paste the commands. There are three:
+
+* `LB_IP` is the public IP address of the network load balancer. You can find it in the Terraform outputs (see Step 5).
+* `HARBOR_PASSWORD` is the admin password. Choose a strong one, and do not keep the default, because Harbor will be reachable from the internet. Do not use a comma in it, because Helm treats a comma as a separator.
+* `HARBOR_FQDN` is the host name of Harbor. We build it with `nip.io`, a free public DNS service. It turns `harbor.<ip>.nip.io` into `<ip>`, so we do not need our own DNS record.
+
+```bash
+export LB_IP="<nlb-elastic-ip>"
+export HARBOR_PASSWORD='<choose-a-strong-password>'
+export HARBOR_FQDN="harbor.${LB_IP}.nip.io"
+```
+
+Variables are lost when you close the terminal. If you open a new session, run these three lines again. We use the same variables in the next sections.
+
+Now we add the Harbor repository and install the chart in its own namespace. The settings do the following:
+
+* **Ingress:** Harbor is exposed through the ingress controller of RKE2, which is Traefik. The load balancer sends ports 80 and 443 to the nodes, and Traefik sends the traffic to Harbor.
+* **TLS:** Harbor creates its own self-signed certificate. A browser will show a warning. This is expected in this demo.
+* **External URL:** This is the address that Harbor tells clients to use, so it must match the host name.
+
+```bash
+helm repo add harbor https://helm.goharbor.io
+helm repo update
+
+helm install harbor harbor/harbor \
+  --namespace harbor --create-namespace \
+  --set expose.type=ingress \
+  --set expose.ingress.className=traefik \
+  --set expose.ingress.hosts.core=${HARBOR_FQDN} \
+  --set expose.tls.enabled=true \
+  --set expose.tls.certSource=auto \
+  --set externalURL=https://${HARBOR_FQDN} \
+  --set harborAdminPassword="${HARBOR_PASSWORD}"
+```
+
+Harbor has several parts (core, database, registry, job service, Trivy scanner and others), and each is a pod. It takes a few minutes to start. Wait until all pods are `Running`:
+
+```bash
+kubectl -n harbor get pods
+```
+
+![harbor-pods](Images/harbor-pods.png)
+
+When they are ready, open `https://<your-harbor-fqdn>` in your browser, accept the certificate warning, and log in with the user `admin` and your password.
+
+![harbor-ui](Images/harbor-ui.png)
+
+## Step 12: Expose Harbor with the ingress
+
+> **PLACEHOLDER:** this step is completed after the ingress is configured. It will cover: the ingress controller and class, the Harbor host name (FQDN), the Helm values for exposing Harbor, the `helm upgrade` command, and a test that the Harbor login page opens.
+
+## Stop, start and clean up
+
+The NAT gateway and the load balancer cost money every hour, even if you do not use them. Two scripts in the `start-stop-scripts/` folder stop and start all the EC2 instances. Run them from the `Terraform/` folder on your laptop, with the same AWS credentials.
+
+```bash
+chmod +x ../start-stop-scripts/*.sh
+../start-stop-scripts/ec2-power-off.sh   # stop all instances
+../start-stop-scripts/ec2-power-on.sh    # start them again
+```
+
+Stopping the instances saves compute cost only. The NAT gateway, the load balancer, the disks and the public IP addresses are still billed. When you are finished with the environment, remove everything:
+
+```bash
+terraform destroy
+```
 
 ---

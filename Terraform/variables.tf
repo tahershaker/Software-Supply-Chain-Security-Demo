@@ -418,7 +418,7 @@ variable "os-ami-owner" {
 variable "os-ami-name" {
   description = "Name filter for the AMI lookup - set to the release you want, e.g. ubuntu-jammy-22.04 or ubuntu-noble-24.04"
   type        = string
-  default     = "ubuntu/images/hvm-ssd-gp3/ubuntu-resolute-26.04-amd64-server-*"
+  default     = "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
 
   validation {
     condition     = length(trimspace(var.os-ami-name)) > 0
