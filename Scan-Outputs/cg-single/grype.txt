@@ -1,0 +1,2 @@
+NAME         INSTALLED  TYPE  VULNERABILITY    SEVERITY  EPSS         RISK  
+sqlite-libs  3.54.1-r0  apk   CVE-2026-119586  High      0.8% (57th)  0.7

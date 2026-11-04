@@ -972,3 +972,287 @@ The fix worked exactly where we own the problem. The Go and library findings wen
 **What to think about next.** We fixed everything that we own, and the image is still not clean. So we ask a new question: **what if we start from a secure image?** A secure image from Chainguard has the same open-source software, but with far fewer vulnerabilities, and it does not depend on the community to fix them. In the next section, we build the same fixed application with a Chainguard image. We keep the same single-stage build, so only the base image changes. The difference in the scan shows how much the secure image helps.
 
 ---
+
+## Section 7: Use a secure image (single-stage)
+
+Now let us see what happens if we use a secure image from Chainguard. A secure image has the same open-source software, but it is rebuilt often from source, so it has far fewer vulnerabilities. It also publishes a signature and an SBOM.
+
+We start with the same build style as before, single-stage, so the comparison with `hello-oss-single-v2` is fair. Both use the same fixed code and the same current Go. Only the base image is different.
+
+But there is a question before we build. **Do we trust this image?** An image from outside is code that we will run. So we do not use it only because of its name. We pull it, check who built it, read what is inside, and only then build.
+
+### Step 7.1: Pull the development image and pin it
+
+The secure Go image has a development variant, tagged `latest-dev`. It has the compiler, a shell and the tools that are needed to build. We pull it. Then we read its digest. A digest is a unique fingerprint of the image. The tag `latest-dev` moves when a new version comes out, but a digest never changes. We use the digest in all the next steps, so we check and build on exactly the same image.
+
+```bash
+docker pull cgr.dev/chainguard/go:latest-dev
+export GO_DEV_REF=$(docker inspect --format '{{index .RepoDigests 0}}' cgr.dev/chainguard/go:latest-dev)
+echo $GO_DEV_REF
+```
+
+The last command prints the image name with its digest, for example `cgr.dev/chainguard/go@sha256:4cddd14c...`. We use this value in the next steps.
+
+### Step 7.2: Check who built it: verify the signature
+
+The images are signed. We verify the signature with Cosign. The command checks that the signature was made by the publisher's official build process on GitHub. We check the digest that we pinned.
+
+```bash
+cosign verify \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  --certificate-identity=https://github.com/chainguard-images/images/.github/workflows/release.yaml@refs/heads/main \
+  $GO_DEV_REF | jq
+```
+
+![section-7-step-2](Images/section-7-step-2.png)
+
+The output has three parts that matter:
+
+- **The checks passed.** Cosign validated the signature and the certificate, and found the signature in the public transparency log.
+- **The digest matches.** `docker-manifest-digest` is the same digest that we pinned, so the signature is for exactly this image.
+- **Chainguard built it.** `githubWorkflowRepository` is `chainguard-images/images`, and the workflow is `release.yaml` on the `main` branch. It ran in GitHub Actions (the `Issuer` field), so the build was automatic and public. Nobody built this image by hand.
+
+> Note: The command above pins the exact subject and issuer that we expect, so the check fails for any other signer. This is how it should be done in a real environment. If you only want to see who signed the image, without pinning them, use this command. It accepts any signer and prints the subject first and the issuer second. |*| Use this one only to find out who signed. It is not a trust check, because it would pass for any signer.
+
+```bash
+cosign verify \
+  --certificate-oidc-issuer-regexp='.*' \
+  --certificate-identity-regexp='.*' \
+  $GO_DEV_REF | jq -r '.[].optional | .Subject, .Issuer'
+```
+
+### Step 7.3: Check what is inside: read the SBOM
+
+The publisher also attaches an SBOM to the image. An SBOM is the list of everything that is inside it. This SBOM is also signed, so first we verify its signature. Then we download it and count the packages.
+
+```bash
+# Verify the signature of the SBOM (same signer check as for the image)
+cosign verify-attestation --type https://spdx.dev/Document \
+  --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
+  --certificate-identity=https://github.com/chainguard-images/images/.github/workflows/release.yaml@refs/heads/main \
+  $GO_DEV_REF > /dev/null
+```
+
+![section-7-step-3-1](Images/section-7-step-3-1.png)
+
+The SBOM passed the same checks as the image: it was signed by Chainguard's `release.yaml` workflow in `chainguard-images/images` on GitHub Actions, so we can trust the list of packages that we download next.
+
+```bash
+# Download the SBOM from the image and save it as a file
+mkdir -p reports/base-sbom
+cosign download attestation --predicate-type=https://spdx.dev/Document --platform=linux/amd64 $GO_DEV_REF \
+  | head -n1 | jq -r .payload | base64 -d | jq .predicate > reports/base-sbom/go-latest-dev.spdx.json
+
+# Count the packages that are listed in the SBOM
+jq '.packages | length' reports/base-sbom/go-latest-dev.spdx.json
+```
+
+![section-7-step-3-2](Images/section-7-step-3-2.png)
+
+The SBOM was downloaded and saved, and it lists **380 packages** in the development image. That is expected, because this image has the compiler, a shell and the build tools. The full SBOM is in [go-latest-dev-sbom-spdx](/Scan-Outputs/base-sbom/go-latest-dev.spdx.json).
+
+### Step 7.4: Write the Dockerfile
+
+Now we build. The Dockerfile takes the pinned digest as a build argument. In a single-stage build, we build and run in the same image. We compile with `CGO_ENABLED=0`, so the binary is fully static.
+
+```bash
+cat > Dockerfiles/Dockerfile.3-cg-single <<'EOF'
+FROM cgr.dev/chainguard/go@sha256:4cddd14c56499968f74ba6156a3c1120dbd6a5e2d8b14fe539a36e3f79b71bf3
+COPY app-fixed/ /app
+WORKDIR /app
+RUN CGO_ENABLED=0 go build -o hello-server .
+ENTRYPOINT ["/app/hello-server"]
+EOF
+```
+
+### Step 7.5: Build and test
+
+```bash
+docker build -f Dockerfiles/Dockerfile.3-cg-single -t hello-cg-single:1.0 .
+
+docker run -d --name test-cg-single -p 8080:8080 hello-cg-single:1.0
+
+curl -s http://localhost:8080; echo
+
+docker rm -f test-cg-single
+```
+
+![section-7-step-5](Images/section-7-step-5.png)
+
+You should see `Hello World!`.
+
+---
+
+## Section 8: Scan the secure image and compare
+
+### Step 8.1: Scan the image
+
+```bash
+./scan.sh hello-cg-single:1.0 cg-single
+```
+
+![section-8-step-1](Images/section-8-step-1.png)
+
+The secure image brought the findings down from **1,200 to 1** in Grype and from **2,175 to 1** in Trivy, a drop of more than 99.9%. The code, the libraries and the build are exactly the same as in `hello-oss-single-v2`. Only the base image changed, and we did not patch a single package ourselves. The full tables are in [cg-single-grype](/Scan-Outputs/cg-single/grype.txt) and [cg-single-trivy](/Scan-Outputs/cg-single/trivy.txt).
+
+The two remaining findings are different, and each scanner sees only one of them:
+
+- **Grype** reports one High finding in the image itself: `sqlite-libs` (CVE-2026-119586), with no fix yet. Its chance of being exploited (EPSS) is low, at 0.8%.
+- **Trivy** reports no finding in the operating system at all. Its one finding is in our own program: the `golang.org/x/crypto` `openpgp` item that we already knew from Section 5 and decided to accept.
+
+This is the value of a trusted image. We verified who built it and read its SBOM before we used it. The vendor rebuilds it often from source, so we are no longer waiting for the community to fix the 708 findings that had no fix. We start from a clean base, we know what is inside it, and what is left is a short list that we can read and explain.
+
+### Step 8.2: See which part improved
+
+The only change between `hello-oss-single-v2` and `hello-cg-single` is the base image. So any difference comes from the base image alone. We use the same command as in Step 4.2 and compare the types.
+
+```bash
+jq -r '[.matches[].artifact.type] | group_by(.) | map("\(.[0]): \(length)") | .[]' reports/cg-single/grype.json
+```
+
+The command prints one line: `apk: 1`. The secure image uses `apk` packages (Chainguard's own packages) instead of the `deb` packages of Debian.
+
+![section-8-step-2](Images/section-8-step-2.png)
+
+| Package type | `v1` | `v2` | `cg-single` |
+|:---|:---|:---|:---|
+| `deb` (Debian operating system) | 1,824 | 1,200 | 0 |
+| `apk` (Chainguard operating system) | 0 | 0 | 1 |
+| `go-module` (Go and libraries) | 400 | 0 | 0 |
+| `binary` | 118 | 0 | 0 |
+
+In Section 6, fixing the code and the libraries removed the Go findings, but 1,200 operating system findings stayed. Now those are gone too. Only one operating system finding is left, and nothing was fixed by us. That is the effect of the base image alone.
+
+### Step 8.3: Summary and comparison
+
+| Image | Scanner | Critical | High | Medium | Low | Other | Total |
+|:---|:---|:---|:---|:---|:---|:---|:---|
+| `hello-oss-single-v1` | Grype | 106 | 647 | 656 | 89 | 844 | 2,342 |
+| `hello-oss-single-v2` | Grype | 29 | 218 | 204 | 44 | 705 | 1,200 |
+| `hello-cg-single` | Grype | 0 | 1 | 0 | 0 | 0 | **1** |
+| `hello-oss-single-v1` | Trivy | 139 | 2,748 | 8,734 | 2,488 | 90 | 14,199 |
+| `hello-oss-single-v2` | Trivy | 2 | 162 | 953 | 1,011 | 47 | 2,175 |
+| `hello-cg-single` | Trivy | 0 | 0 | 0 | 0 | 1 | **1** |
+
+The secure image brought the findings down from **1,200 to 1** in Grype and from **2,175 to 1** in Trivy, a drop of more than 99.9%. The code, the libraries and the build are exactly the same as in `hello-oss-single-v2`.
+
+The two remaining findings are different, and each scanner sees only one of them. Grype reports one High finding in the image itself: `sqlite-libs` (CVE-2026-119586), with no fix yet and a low chance of being exploited (EPSS 0.8%). Trivy reports no finding in the operating system. Its one finding is the `golang.org/x/crypto` `openpgp` item in our own program, which we already knew from Section 5.
+
+This is the value of a trusted image. We verified who built it and read its SBOM before we used it. The vendor rebuilds it often from source, so we are no longer waiting for the community to fix the 708 findings that had no fix. We start from a clean base, we know what is inside it, and what is left is a short list that we can read and explain.
+
+But this image is still a single-stage image. It carries the Go compiler and the development tools, so it still has a larger attack surface than it needs, even if it is clean. Now we ask the next question: **the application does not need a compiler to run. Why do we ship it?** This is the reason for the next section.
+
+---
+
+## Section 9: Use a multi-stage build (development image to build, distroless image to run)
+
+Now let us see what happens if we reduce the attack surface by using a multi-stage build. The idea is to use two different images for two different jobs.
+
+* The **build stage** uses the secure development image. It has more packages: a shell, a compiler and the tools we need to build. It builds our application. We already checked it in Section 7.
+* The **run stage** uses a secure **distroless** image. It has almost nothing in it. No shell, no package manager, no compiler. We copy only the finished application into it, and we change nothing else.
+
+The distroless image is called `static`. It works for our program, because our program is a static binary. We compiled it with `CGO_ENABLED=0`, so it needs no other library.
+
+### Step 9.1: Pull the distroless image and pin it
+
+We pull the image and pin it by its digest, as we did for the development image.
+
+```bash
+docker pull cgr.dev/chainguard/static:latest
+export STATIC_REF=$(docker inspect --format '{{index .RepoDigests 0}}' cgr.dev/chainguard/static:latest)
+echo $STATIC_REF
+```
+
+> In this section we skip the signature and SBOM checks, to keep it short. We did them for the development image in Section 7. In a real environment, they must be done for every image that we use, including this one.
+
+### Step 9.2: Write the Dockerfile
+
+The first stage is the development image. The second stage is the distroless image. The line `COPY --from=builder` takes only our finished application from the first stage.
+
+```bash
+cat > Dockerfiles/Dockerfile.4-cg-multi <<'EOF'
+FROM cgr.dev/chainguard/go@sha256:4cddd14c56499968f74ba6156a3c1120dbd6a5e2d8b14fe539a36e3f79b71bf3 AS builder
+COPY app-fixed/ /app
+WORKDIR /app
+RUN CGO_ENABLED=0 go build -o hello-server .
+
+FROM cgr.dev/chainguard/static@sha256:fc42af33e643f20d08baf03cddcc1c02ba57052dfb02edb0d79f3fc47bcea8d9
+COPY --from=builder /app/hello-server /usr/bin/hello-server
+ENTRYPOINT ["/usr/bin/hello-server"]
+EOF
+```
+
+### Step 9.3: Build and test
+
+```bash
+docker build -f Dockerfiles/Dockerfile.4-cg-multi -t hello-cg-multi:1.0 .
+
+docker run -d --name test-cg-multi -p 8080:8080 hello-cg-multi:1.0
+
+curl -s http://localhost:8080; echo
+
+docker rm -f test-cg-multi
+```
+
+![section-9-step-3](Images/section-9-step-3.png)
+
+You should see `Hello World!`.
+
+---
+
+## Section 10: Scan the multi-stage image and compare everything
+
+### Step 10.1: Scan the image
+
+```bash
+./scan.sh hello-cg-multi:1.0 cg-multi
+```
+
+![section-10-step-1](Images/section-10-step-1.png)
+
+Only the build style changed between `hello-cg-single` and `hello-cg-multi`, and the findings went from 1 to **0** in Grype. Trivy still reports 1, the `golang.org/x/crypto` item in our own program. The full tables are in `Scan-Outputs/cg-multi/grype.txt` and `Scan-Outputs/cg-multi/trivy.txt`.
+
+### Step 10.2: See which part improved
+
+The only change between `hello-cg-single` and `hello-cg-multi` is the build style. So any difference comes from the build style alone. We use the same command as in Step 4.2 and compare the types.
+
+```bash
+jq -r '[.matches[].artifact.type] | group_by(.) | map("\(.[0]): \(length)") | .[]' reports/cg-multi/grype.json
+```
+
+![section-10-step-2](Images/section-10-step-2.png)
+
+The command prints nothing. This is the result we want: Grype found no vulnerability, so there is no package type to count. The full output is in `Scan-Outputs/cg-multi/grype.txt` and `Scan-Outputs/cg-multi/trivy.txt`.
+
+| Package type | `v1` | `v2` | `cg-single` | `cg-multi` |
+|:---|:---|:---|:---|:---|
+| `deb` (Debian operating system) | 1,824 | 1,200 | 0 | 0 |
+| `apk` (Chainguard operating system) | 0 | 0 | 1 | 0 |
+| `go-module` (Go and libraries) | 400 | 0 | 0 | 0 |
+| `binary` | 118 | 0 | 0 | 0 |
+
+In Section 8, the secure base image removed the operating system findings, but one finding was left in `sqlite-libs`, a package that came with the development tools. That finding is gone now. The multi-stage build ships only the finished program in the small runtime image, so the development tools, and the vulnerability that came with them, are not in the final image. Grype reports **0** findings. Trivy reports **1**: the `golang.org/x/crypto` `openpgp` item, which is in our own program and which we accepted in Section 5.
+
+### Step 10.3: Summary and comparison
+
+| Image | Scanner | Critical | High | Medium | Low | Other | Total |
+|:---|:---|:---|:---|:---|:---|:---|:---|
+| `hello-oss-single-v1` | Grype | 106 | 647 | 656 | 89 | 844 | 2,342 |
+| `hello-oss-single-v2` | Grype | 29 | 218 | 204 | 44 | 705 | 1,200 |
+| `hello-cg-single` | Grype | 0 | 1 | 0 | 0 | 0 | 1 |
+| `hello-cg-multi` | Grype | 0 | 0 | 0 | 0 | 0 | **0** |
+| `hello-oss-single-v1` | Trivy | 139 | 2,748 | 8,734 | 2,488 | 90 | 14,199 |
+| `hello-oss-single-v2` | Trivy | 2 | 162 | 953 | 1,011 | 47 | 2,175 |
+| `hello-cg-single` | Trivy | 0 | 0 | 0 | 0 | 1 | 1 |
+| `hello-cg-multi` | Trivy | 0 | 0 | 0 | 0 | 1 | **1** |
+
+The same application, with the same logic, went from **2,342 findings to 0** in Grype and from **14,199 to 1** in Trivy. Each step did a different job:
+
+- **Fixing what we own** (code and libraries) removed all the Go and library findings, 518 in Grype. This is the cheapest step, but it left 1,200 operating system findings that we could not fix.
+- **Using a secure image** removed almost all of those 1,200 at once, without us patching a single package. We checked who built the image and what is inside it, and we do not wait for the community to fix the findings.
+- **Using a multi-stage build** removed the last finding in the image, and it removed the compiler and the build tools. The final image has only the program and what it needs to run.
+
+One finding remains in Trivy: the `golang.org/x/crypto` `openpgp` item, in our own program. Its fix exists only as a pre-release version, and our code does not use that package, so we accept it for now and write it down. The point is not zero findings. The point is that what is left is a short list that we can read, explain and decide on.
+
+---
+
