@@ -457,7 +457,9 @@ Terraform shows what it will delete and asks you to confirm. Type `yes`. This re
 ---
 
 > ###################################
+>
 > SSCS DEMO START HERE - STEP-BY-STEP
+>
 > ###################################
 
 ---
