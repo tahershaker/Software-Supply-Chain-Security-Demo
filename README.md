@@ -584,7 +584,7 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/app:/src" -w /s
 
 ![section-2-step-2](Images/section-2-step-2.png)
 
-Read the output. The first part lists the vulnerabilities that our code really calls. These are the real risk. Our scan found 11 of them. Each entry has an ID (like `GO-2026-6617`), a short title, the library, the installed version, and the version that fixes it. All 11 come from one library, `golang.org/x/net`, and we use a version from 2021. Under each entry, there is a list of traces. They show how our code reaches the problem: `main.go` calls Gin, and Gin calls the HTTP/2 code in this library. The traces are long, so the full output is saved in the file [govulncheck-before.txt](/Scan-Outputs/govulncheck-before.txt).
+Read the output. The first part lists the vulnerabilities that our code really calls. These are the real risk. Our scan found 11 of them. Each entry has an ID (like `GO-2026-6617`), a short title, the library, the installed version, and the version that fixes it. All 11 come from one library, `golang.org/x/net`, and we use a version from 2021. Under each entry, there is a list of traces. They show how our code reaches the problem: `main.go` calls Gin, and Gin calls the HTTP/2 code in this library. The traces are long, so the full output is saved in the file [govulncheck-before.txt](/Scan-Outputs/code/govulncheck-before.txt).
 
 The summary at the end is the most important part. It says that our code is affected by 11 vulnerabilities from 1 module. It also says that the scan found 8 more vulnerabilities in packages that we import, and 44 in modules that we require, but our code does not appear to call them. These have a lower priority. A scanner that only lists what is installed would show all 63. `govulncheck` shows which 11 matter most.
 
@@ -602,7 +602,7 @@ trivy fs app/ | tee reports/code/trivy-fs-before.txt
 
 Trivy found **64 vulnerabilities** in `go.mod`: 32 HIGH, 27 MEDIUM and 5 UNKNOWN, with no CRITICAL or LOW. The full output is saved in `Scan-Outputs/trivy-fs-before.txt`.
 
-To read the table, look at four columns for each row: the library, the severity, the installed version and the fixed version. Here, all 64 findings sit in six libraries, and every one has a fixed version available. Most come from the old `golang.org/x/*` libraries, mainly `x/crypto` and `x/net`, so updating those libraries removes most of the findings.
+To read the table, look at four columns for each row: the library, the severity, the installed version and the fixed version. Here, all 64 findings sit in six libraries, and every one has a fixed version available. Most come from the old `golang.org/x/*` libraries, mainly `x/crypto` and `x/net`, so updating those libraries removes most of the findings. The full output table is saved in the file [trivy-fs-before,txt](/Scan-Outputs/code/trivy-fs-before.txt)
 
 Trivy and govulncheck find almost the same vulnerable versions: 64 for Trivy and 63 for govulncheck. The difference is what they do next. Trivy stops at the list. govulncheck checks whether the code calls the vulnerable function, and only **11 of its 63** are reachable (the other 8 are in imported packages and 44 in required modules that the code does not call). So Trivy tells us what is installed, and govulncheck tells us what to fix first.
 
@@ -639,5 +639,121 @@ We need to fix these findings. The goal is that our application does not ship an
 - **Cost:** Low to medium, for the same reason: rebuild and test. The bigger cost is that this work never ends. New CVEs appear every month, so we must repeat it.
 
 In a real pipeline, the story would stop here. The pipeline would fail, and nobody would build the image until the problems are fixed. In this demo, we continue on purpose, only to learn. We will **not fix yet**. We want to see the full picture first, then fix everything in one go in Step 5.
+
+---
+
+## Section 3: Build the image as it is (open-source, old version, single-stage)
+
+We build the unfixed application with an open-source image. We use an old version on purpose: Go 1.18, the version named in `go.mod`. An old image carries old problems from the base image and from Go itself. We want to see them.
+
+We use a **single-stage** build. This is the simplest way to package an application: one Dockerfile with one `FROM` line. We start from the official Go image, copy our code in, build it, and run it.
+
+> Note: Run every command in this section from the `~/demo` folder. The Dockerfile path and the build context both depend on it.
+
+### Step 3.1: Write the Dockerfile
+
+```bash
+cat > Dockerfiles/Dockerfile.1-oss-single <<'EOF'
+FROM golang:1.18
+WORKDIR /app
+COPY app/ .
+RUN CGO_ENABLED=0 go build -o hello-server .
+CMD ["./hello-server"]
+EOF
+```
+
+`CGO_ENABLED=0` makes Go build a static binary. We use the same build command in all four images, so the comparison between them is fair.
+
+### Step 3.2: Build and test
+
+We build the image and run it once to check that the application works and answers `Hello World!`.
+
+**Build the image**
+
+```bash
+docker build -f Dockerfiles/Dockerfile.1-oss-single -t hello-oss-single-v1:1.0 .
+```
+
+**Run the image**
+
+```bash
+docker run -d --name test-v1 -p 8080:8080 hello-oss-single-v1:1.0
+```
+
+**Check that it returns Hello World!**
+
+```bash
+curl -s http://localhost:8080; echo
+```
+
+![section-3-step-2](Images/section-3-step-2.png)
+
+You should see `Hello World!`.
+
+**Delete the container**
+
+```bash
+docker rm -f test-v1
+```
+
+---
+
+## Section 4: Scan the image and understand the findings
+
+We have an image built from the unfixed code on an old base. Does an image scan find the same things as the code check? Let us find out.
+
+### Step 4.1: Scan the image
+
+A reminder of two words. A **CVE** (Common Vulnerabilities and Exposures) is a public ID, like `CVE-2023-12345`, for one known security bug. Each CVE gets a **severity**: Critical, High, Medium or Low. Scanners compare what is inside the image with a database of CVEs.
+
+```bash
+./scan.sh hello-oss-single-v1:1.0 oss-single-v1
+```
+
+The first run downloads the scanner databases, so it can take a minute.
+
+![section-4-step-1](Images/section-4-step-1.png)
+
+The scan is long, so we read it in three steps. The full tables are saved in [oss-single-v1-grype](/Scan-Outputs/oss-single-v1/grype.txt) and [oss-single-v1-trivy](/Scan-Outputs/oss-single-v1/trivy.txt). To read the Grype table on the server, run:
+
+| Image | Scanner | Critical | High | Medium | Low | Other |
+|:---|:---|:---|:---|:---|:---|:---|
+| `hello-oss-single-v1` | Grype | 106 | 647 | 656 | 89 | 844 (Negligible) |
+| `hello-oss-single-v1` | Trivy | 139 | 2,748 | 8,734 | 2,488 | 90 (Unknown) |
+
+The same small application now has thousands of findings, and our own code did not change. Grype reports **2,342** findings and Trivy reports **14,199**. Both scanners show hundreds of Critical and High findings.
+
+Each row in the Grype table is one finding. Look at four columns for each row: the **package**, the **installed version**, the **fixed-in version** and the **severity**. Two things stand out:
+
+- Most rows are operating system packages (type `deb`), and not Go libraries. About nine in ten rows come from the Debian base image.
+- Almost half of the rows have an empty fixed-in column. For these, no fixed version exists yet, so updating the package cannot fix them.
+
+Trivy shows a much bigger number than Grype. The reason is the way it counts. Trivy scans every Go program inside the image, and the Go compiler and its tools are all there. Each of them is counted again with the same Go standard library bugs. This is another sign that the image carries tools our application does not need.
+
+### Step 4.2: Group the findings by source
+
+A big number does not tell us what to do. We need to know where the findings come from. Grype tells us the type of each package. `deb` is an operating system package. `go-module` is a Go library, and that includes the Go standard library. `binary` is a program found by its file.
+
+```bash
+jq -r '[.matches[].artifact.type] | group_by(.) | map("\(.[0]): \(length)") | .[]' reports/oss-single-v1/grype.json
+```
+
+![section-4-step-2](Images/section-4-step-2.png)
+
+The 2,342 Grype findings split like this:
+
+| Package type | Findings | Share |
+|:---|:---|:---|
+| `deb` (operating system packages) | 1,824 | 78% |
+| `go-module` (Go libraries and the Go standard library) | 400 | 17% |
+| `binary` (programs found by their file) | 118 | 5% |
+
+Almost four in five findings come from the operating system of the base image. These are packages that our application never uses, but that came with the image. Only a small part comes from Go and our libraries. Write these numbers down. We use them again in Section 6 to see which part improves with a secure image.
+
+### Step 4.3: Compare the scanners and the code check
+
+Are the two scanners saying the same thing? Not in the totals: Grype reports 2,342 findings and Trivy reports 14,199. The scanners use different databases and different matching rules. Trivy also counts the same Go bug again for every Go program in the image. So we do not compare totals or individual IDs. We compare the severity levels and the top findings. Both scanners agree on the main point: hundreds of Critical and High findings, mostly from the base image.
+
+Now compare with Section 2. The libraries that the code scans flagged appear again in the image scan, for example `golang.org/x/net` and `gin`. But the image scan shows much more that the code check could not see: the Go standard library inside the program, and the operating system packages of the base image, which are 78% of the Grype findings. This is why we need both: the code check early, and the image scan later.
 
 ---
