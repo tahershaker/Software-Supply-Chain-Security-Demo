@@ -166,60 +166,28 @@ Before we use an image that someone else built, we should ask three questions. W
 
 This is a short overview of what we do and why we do it. The detailed commands are in the [Step-By-Step](#step-by-step) section.
 
-**1. Build the environment:** We use Terraform to create a network, a work machine, a Kubernetes cluster and a registry.
-*Why:* Everything else in this demo needs a place to build, store and run images. We describe that place in code, so anyone can create it again in minutes and get the same result. There are no hidden manual settings, the code is easy to review, and we can destroy the environment when we do not need it. This means less manual work, fewer mistakes and a lower cost.
+**1. Build the environment:** We use Terraform to create a network, a work machine, a Kubernetes cluster and a registry. | *Why:* Code-based environments are repeatable, easy to review and quick to create again. In this demo, we need a realistic place to build, store and run the images, and we want anyone to be able to repeat it.
 
-**2. Check our code and our libraries (shift left):** Before we build anything, we scan our own code (SAST) and the libraries it uses (SCA).
-- *Why:* The earlier you find a problem, the cheaper it is to fix. For example, if a library is old, the fix is to change one version number in a file. That takes minutes. If the same problem is found in production, the team must rebuild, test and deploy again, and sometimes handle an incident. Checking early means problems are stopped before they reach an image, a registry or a customer.
+**2. Check our code and our libraries (shift left):** Before we build anything, we scan our own code (SAST) and the libraries it uses (SCA). | *Why:* The earlier you find a problem, the cheaper it is to fix. A fix in a source file takes minutes. The same fix in production takes days. In this demo, we need to know which vulnerabilities and flaws come from our own code and libraries, so we can follow them through the flow and see later which ones are still there.
 
-**3. Build the image as it is, and scan it.**
-We build the unfixed application in a single-stage image with an old open-source base image, and we scan it with two scanners.
+**3. Build the image as it is, and scan it:** We build the unfixed application in a single-stage image with an old open-source base image, and we scan it with two scanners. | *Why:* Scanning an image shows you what is inside it and which known vulnerabilities it carries, including the ones that come from the base image and the libraries. The scan turns risk into numbers (CVEs by severity), and these numbers become the baseline that lets you prove later that things got better. In this demo, we use code that we already know has issues, to show the idea and to improve understanding.
 
-*Why:* In a real pipeline, this build would not happen, because the code check would stop it. We do it here on purpose, to see what the scanners find in an image. This includes problems that come from the base image, which a code check cannot see. It also gives us a baseline. Without a baseline, we cannot prove that anything got better. The scan turns risk into numbers (CVEs by severity), and managers, security teams and auditors all understand numbers.
+**4. Understand which findings matter:** We group the findings by source, compare the two scanners, check which findings have a fix, and check which vulnerable code the program really uses. | *Why:* A long list of findings is not a plan. Teams need to know where to start, so they do not waste time on alerts that do not matter. In this demo, we want to show where vulnerabilities come from (code, libraries, Go, base image), so we can see later what each step helped.
 
-**4. Understand which findings matter.**
-We group the findings by source, compare the two scanners, check which findings have a fix, and check which vulnerable code the program really uses.
+**5. Fix the code, the libraries and the image, then scan again:** We update the libraries, fix a code warning, move to a current Go version and a current open-source image, and build again. | *Why:* Updating is usually the cheapest fix, and one update can remove many findings at once. In this demo, we want to see how far updating can go. Some findings will remain, because no fix exists for them yet, and this leads to the next step.
 
-*Why:* A list of hundreds of findings is not a plan. Grouping by source shows who must act: the developers for the code and the libraries, and the platform team for Go and the base image. The two scanners use different databases, so we compare them. A scanner lists everything that is installed, but it does not say if the program really uses the vulnerable code, so we check that too. The result is a short list to start with. Teams spend time on what matters, and they do not get tired of alerts.
+**6. Check the secure image, then use it (single-stage):** We pull the secure image, verify its signature, read its SBOM, and pin it by digest. Then we build, scan and compare. | *Why:* When a finding has no fix, you can fix it yourself, wait for the open-source community, or use a secure image that is built from the same open source with as few CVEs as possible. You should also never trust an image only because of its name. In this demo, we want to show the value of a secure image, and we check who built it and what is inside before we use it.
 
-**5. Fix the code, the libraries and the image, then scan again.**
-We update the libraries, fix a code warning, move to a current Go version and a current open-source image, and build again.
+**7. Reduce the attack surface with a multi-stage build:** We build the application in a development image and run it in a minimal, distroless image. We check this image the same way, then scan and compare everything. | *Why:* The compiler and the build tools are not needed to run the application. Every extra tool is a possible vulnerability and a possible tool for an attacker. In this demo, we want to show how much smaller the attack surface becomes when only the finished application is left in the final image.
 
-*Why:* Updating is usually the cheapest fix, and one update can remove many findings at once. But some findings will remain, because no fix exists for them yet. This shows the limit of patching: you cannot update to a fix that does not exist. This leads to the next step.
+**8. Run the final image with safe settings:** We run it as a standalone container, with a non-root user, a read-only file system and no extra Linux powers. | *Why:* Even a good image can have a bug that nobody knows yet, so we limit what an attacker can do. This is the "least privilege" idea. In this demo, we want to prove that the final image runs correctly with these tight settings.
 
-**6. Check the secure image, then use it (single-stage).**
-We pull the secure image, verify its signature, read its SBOM, and pin it by digest. Then we build, scan and compare.
+**9. Create SBOMs:** We create a Software Bill of Materials (SBOM) for each image. It is a list of every package, library and tool inside the image, with their versions. | *Why:* You cannot protect what you cannot see. With the list, you can match every item to a vulnerability database, such as the NVD, which publishes each new CVE with its severity and, when available, the fix. When the next big vulnerability is announced, you can answer "are we affected?" in minutes. In this demo, we want to show how an SBOM makes this possible, and that it can be scanned again later without the image.
 
-*Why:* For a finding with no fix, we have three options. We can fix it ourselves, which moves our image away from the open-source version and leaves us with a patch to maintain. We can wait for the open-source community. Or we can use a secure image, where a provider builds the same open source from source and fixes vulnerabilities without waiting for the community. We choose the third option. But we do not trust an image because of its name. The signature proves who built it and that nobody changed it. The SBOM shows what is inside. The digest is a fingerprint, so we build on exactly the image we checked. The result is the same open source, fewer CVEs and less patching.
+**10. Store the images in a private registry and scan again:** We push the images to Harbor, which scans them and keeps the results in one place. We compare Harbor's results with our own scans. | *Why:* The registry is the gate between building and running, so it is the best place to check images and to enforce rules. In this demo, we want to show a central view of risk, and a second, independent scan to compare with our own.
 
-**7. Reduce the attack surface with a multi-stage build.**
-We build the application in a development image and run it in a minimal, distroless image. We check this image the same way, then scan and compare everything.
+**11. Sign the final image and enforce rules:** We sign the final image and its SBOM with Cosign, verify them, and set rules in the registry: no unsigned images, and no images with serious vulnerabilities. | *Why:* A signature shows who made the image and that nobody changed it, but it does not say the image is safe. So we combine it with the vulnerability check. In this demo, we want to show trust that you can prove: an image can run only if we know who made it and it passed our scan.
 
-*Why:* In a single-stage image, the compiler and the build tools travel to production, and the application does not need them to run. Each extra tool is a possible vulnerability and a possible tool for an attacker. With a multi-stage build, we build in the first stage and copy only the finished application into a minimal image. That image has no shell and no package manager. The code does not change, but the attack surface is much smaller. This means fewer alerts, less patching and less for auditors to review.
-
-**8. Run the final image with safe settings.**
-We run it as a standalone container, with a non-root user, a read-only file system and no extra Linux powers.
-
-*Why:* Even a good image can have a bug that nobody knows yet, so we limit what an attacker can do. A non-root user does not have admin rights. A read-only file system stops an attacker from adding or changing files. Removing the extra Linux powers takes away abilities the application never needs. If something goes wrong, the damage stays small. This is the "least privilege" idea.
-
-**9. Create SBOMs.**
-We create a Software Bill of Materials (SBOM) for each image. It is a list of every package, library and tool inside the image, with their versions.
-
-*Why:* Without a list, you must open each image and search blind. An SBOM is like the list of ingredients on a food package: it tells you exactly what you have. With the list, you can match every item to vulnerability databases, such as the NVD. These databases publish each new CVE with its severity and, when available, the fix. When the next big vulnerability is announced, as Log4j was in 2021, you can search your SBOMs and answer "are we affected?" in minutes, and not in weeks. You can also scan an SBOM again later, without the image, as new CVEs appear every day. Customers and regulators also ask for SBOMs more and more.
-
-**10. Store the images in a private registry and scan again.**
-We push the images to Harbor, which scans them and keeps the results in one place. We compare Harbor's results with our own scans.
-
-*Why:* The registry is the gate between building and running. Every image passes through it, so it is the best place to check images and to enforce rules. Harbor scans on its own, so it gives us a second, independent check. It also keeps the SBOMs and signatures next to the images. The business gets one central view of risk, and one place to stop images that should not run.
-
-**11. Sign the final image and enforce rules.**
-We sign the final image and its SBOM with Cosign, verify them, and set rules in the registry: no unsigned images, and no images with serious vulnerabilities.
-
-*Why:* A signature shows who made the image and that nobody changed it. But a signature does not say the image is safe. A signed image can still have serious vulnerabilities. So we combine the signature with the vulnerability check. Now an image can run only if we know who made it, it was not changed, and it passed our scan. This gives you trust that you can prove, to your customers and to auditors.
-
-**12. Deploy to Kubernetes and expose to the public.**
-We deploy the signed image from Harbor with safe settings, check the Kubernetes files for mistakes, and make the application reachable from the internet.
-
-*Why:* We want to prove the full path, from source code to a running service. Checking the Kubernetes files finds bad settings before they reach the cluster. The cluster pulls only an image that passed all the earlier checks. A new application can then follow the same safe path from day one.
+**12. Deploy to Kubernetes and expose to the public:** We deploy the signed image from Harbor with safe settings, check the Kubernetes files for mistakes, and make the application reachable from the internet. | *Why:* The same checks must work in a real cluster, and a new application should follow the same safe path from day one. In this demo, we want to prove the full path, from source code to a running service.
 
 ---
