@@ -759,3 +759,216 @@ Are the two scanners saying the same thing? Not in the totals: Grype reports 2,3
 Now compare with Section 2. The libraries that the code scans flagged appear again in the image scan, for example `golang.org/x/net` and `gin`. But the image scan shows much more that the code check could not see: the Go standard library inside the program, and the operating system packages of the base image, which are 78% of the Grype findings. This is why we need both: the code check early, and the image scan later.
 
 ---
+
+## Section 5: Fix the code, the libraries and the image
+
+Now we do what a normal team would do first: fix. Our analysis shows three things we can fix with updates: a problem in the code, the libraries in `go.mod`, and the image itself. The image has two old parts: Go 1.18, and the old base. A newer Go image fixes both, because the Go image brings its own operating system. The libraries and Go are also connected, because new libraries often need a newer Go. So we move to a new image and new libraries together.
+
+### Step 5.1: Update the libraries
+
+We keep the original `app` folder untouched, because we need it for the "before" results. We work in a copy, `app-fixed`. We ask Go to update all libraries to their newest versions and to clean up the `go.mod` file. We do it inside a Go container, so no Go install is needed.
+
+The container runs two commands. `go get -u ./...` updates the libraries, and `go mod tidy` cleans up `go.mod` and `go.sum`, so they list only the libraries that the code really uses.
+
+```bash
+cp -r app app-fixed
+
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/app-fixed:/src" -w /src golang:latest \
+  sh -c 'go get -u ./... && go mod tidy'
+```
+
+To see what changed, we compare the old and the new `go.mod` with the `diff` command:
+
+```bash
+diff app/go.mod app-fixed/go.mod
+```
+
+![section-5-step-1](Images/section-5-step-1.png)
+
+Lines that start with `<` are the old versions and lines that start with `>` are the new ones. Here is what happened. `go get -u` moved every library to its newest version, and `go mod tidy` cleaned up the file. Three changes matter:
+
+- **Go itself moved from 1.18 to 1.26.10.** The new libraries need a newer Go, so Go raised the `go` line at the top by itself. We use this same Go version for the new image.
+- **`gin` moved from v1.8.1 to v1.12.0.** This is the web framework of our application, and it is the biggest jump.
+- **The libraries behind most of the findings moved past their fixed versions.** For example, `golang.org/x/net` moved from a 2021 version to v0.62.0, and `golang.org/x/text` from v0.3.6 to v0.43.0. These are the versions that Trivy and govulncheck told us to use.
+
+You will also see some new libraries in the list. The newer `gin` depends on them, so Go added them. This is normal for a big version jump.
+
+### Step 5.2: Fix the code
+
+gosec found one problem in our code (G104): the program ignores the error that `r.Run()` can return. If the server fails to start, nobody would know. The fix is to check the error and log it. We replace `main.go` in the copy:
+
+```bash
+cat > app-fixed/main.go <<'EOF'
+package main
+
+import (
+	"log"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+func main() {
+	r := gin.Default()
+	r.GET("/", func(c *gin.Context) {
+		c.String(http.StatusOK, "Hello World!")
+	})
+	if err := r.Run(); err != nil {
+		log.Fatal(err)
+	}
+}
+EOF
+```
+
+### Step 5.3: Run the code checks again
+
+This is the shift-left check again. If our fixes worked, the code checks should now be clean, or much cleaner. We run the same three checks on the fixed code.
+
+**Check the code with gosec SAST**
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/app-fixed:/src" -w /src golang:latest \
+  sh -c 'go install github.com/securego/gosec/v2/cmd/gosec@latest && gosec ./...' \
+  | tee reports/code/gosec-after.txt
+```
+
+![section-5-step-2-1](Images/section-5-step-2-1.png)
+
+gosec now reports **0 issues**, down from `<N>` before: the unhandled error (G104) is fixed, because the program now checks and logs the error from `r.Run()`.
+
+**Check the code with govulncheck SCA**
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/app-fixed:/src" -w /src golang:latest \
+  sh -c 'go install golang.org/x/vuln/cmd/govulncheck@latest && govulncheck ./...' \
+  | tee reports/code/govulncheck-after.txt
+```
+
+![section-5-step-2-2](Images/section-5-step-2-2.png)
+
+govulncheck now reports **0 vulnerabilities that our code can reach**, down from 11 before. It found 1 more vulnerability in a module we require, but our code does not call it, so it is not a risk to the application. Before, it found 63 in total (11 reachable, 8 in packages we import and 44 in modules we require).
+
+**Check the code with tirvy SCA**
+
+```bash
+trivy fs app-fixed/ | tee reports/code/trivy-fs-after.txt
+```
+
+![section-5-step-2-3](Images/section-5-step-2-3.png)
+
+Trivy now reports **1 finding**, down from 64: `golang.org/x/crypto` (GO-2026-5932, severity UNKNOWN), a warning about the unmaintained `openpgp` package. Our code does not use it. The fix is only a pre-release version, not a normal tagged release, so we leave it and note it as the one remaining finding.
+
+**Summary:**
+
+| Check | Tool | Before | After |
+|:---|:---|:---|:---|
+| SAST | gosec | `<N>` issue(s) | **0** issues |
+| SCA (reachability) | govulncheck | 63 found, **11 reachable** | 1 found, **0 reachable** |
+| SCA (all libraries) | Trivy | **64** findings | **1** finding (UNKNOWN) |
+
+The fixes worked. Our code has no issues, and no vulnerability can be reached by our application. One finding remains, in `golang.org/x/crypto` (GO-2026-5932). It is about the `openpgp` package, which our code does not use. Its fix exists only as a pre-release version, so we do not take it, and we note it as a known item.
+
+### Step 5.4: Write the Dockerfile for the new version
+
+We build with a pinned Go version, and not `latest`. A pinned version means we can build the same image again later. We use the same version that `golang:latest` has today, which is the one that updated `go.mod`.
+
+It is still a single-stage build, with an open-source Go image. We change the code, the libraries and the image version. The build style does not change.
+
+```bash
+GO_VERSION=$(docker run --rm golang:latest go env GOVERSION | sed 's/^go//')
+
+cat > Dockerfiles/Dockerfile.2-oss-single-fixed <<EOF
+FROM golang:${GO_VERSION}
+WORKDIR /app
+COPY app-fixed/ .
+RUN CGO_ENABLED=0 go build -o hello-server .
+CMD ["./hello-server"]
+EOF
+```
+
+### Step 5.5: Build and test
+
+**Build the image**
+
+```bash
+docker build -f Dockerfiles/Dockerfile.2-oss-single-fixed -t hello-oss-single-v2:1.0 .
+```
+
+**Run the image**
+
+```bash
+docker run -d --name test-v2 -p 8080:8080 hello-oss-single-v2:1.0
+```
+
+**Check that it returns Hello World!**
+
+```bash
+curl -s http://localhost:8080; echo
+```
+
+![section-5-step-5](Images/section-5-step-5.png)
+
+You should see `Hello World!`.
+
+**Delete the container**
+
+```bash
+docker rm -f test-v2
+```
+
+---
+
+## Section 6: Scan the fixed image and compare
+
+We fixed the code, the libraries and the image. Now we scan again and compare with the first image. Think about what you expect before you look at the numbers. The library findings and the Go findings should go down a lot. The operating system findings should also go down, because the base is newer. But we do not expect zero. The base image is still a full Linux system with a compiler and many tools.
+
+### Step 6.1: Scan the image
+
+```bash
+./scan.sh hello-oss-single-v2:1.0 oss-single-v2
+```
+
+![section-6-step-1](Images/section-6-step-1.png)
+
+The fix helped a lot. Grype findings went from 2,342 to **1,200** (down 49%), and Critical went from 106 to **29**. Trivy findings went from 14,199 to **2,175** (down 85%), and Critical went from 139 to **2**. The Go and library findings are gone: Grype shows no `go-module` or `binary` findings now, and Trivy shows only 1 finding in our program. **All 1,200 remaining Grype findings are operating system packages** from the Debian base image, and 708 of them (59%) have no fix available.
+
+So the part that we own is clean, and the part that we do not own is not. We can patch the OS packages that have a fix, but we cannot fix the 708 that do not, and the image still carries hundreds of tools that our application never uses.
+
+The full tables for both scanners are in [oss-single-v2-grype](/Scan-Outputs/oss-single-v2/grype.txt) and [oss-single-v2-trivy](/Scan-Outputs/oss-single-v2/trivy.txt).
+
+### Step 6.2: See which part improved
+
+Because we changed several things at once, we use the type of each finding to see which part improved. We run the same command as in Step 4.2 on the new report, and compare it with the numbers from before.
+
+```bash
+jq -r '[.matches[].artifact.type] | group_by(.) | map("\(.[0]): \(length)") | .[]' reports/oss-single-v2/grype.json
+```
+
+![section-6-step-2](Images/section-6-step-2.png)
+
+The command now prints only one line: `deb: 1200`. The `go-module` and `binary` types are missing, because no finding is left in them.
+
+| Package type | `v1` (Step 4.2) | `v2` |
+|:---|:---|:---|
+| `deb` (operating system) | 1,824 | 1,200 |
+| `go-module` (Go and libraries) | 400 | 0 |
+| `binary` | 118 | 0 |
+
+The fix worked exactly where we own the problem. The Go and library findings went from 518 to zero, because we updated the libraries and moved to a current Go version. The operating system findings went down by about a third, because the base image is newer. But all the findings that remain are in the operating system. This is the part of the image that we did not write and cannot fix ourselves.
+
+### Step 6.3: Summary and comparison
+
+| Image | Scanner | Critical | High | Medium | Low | Other | Total | Improved % |
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|
+| `hello-oss-single-v1` | Grype | 106 | 647 | 656 | 89 | 844 (Negligible) | 2,342 | |
+| `hello-oss-single-v2` | Grype | 29 | 218 | 204 | 44 | 705 (Negligible) | 1,200 | 49% |
+| `hello-oss-single-v1` | Trivy | 139 | 2,748 | 8,734 | 2,488 | 90 (Unknown) | 14,199 | |
+| `hello-oss-single-v2` | Trivy | 2 | 162 | 953 | 1,011 | 47 (Unknown) | 2,175 | 85% |
+
+**What changed.** Fixing the code, the libraries and the base version cut the findings by 49% in Grype and by 85% in Trivy. The biggest drop is in the serious findings: Critical went from 106 to 29 in Grype, and from 139 to 2 in Trivy.
+
+**What is left.** All 1,200 remaining Grype findings are operating system packages, and 708 of them (59%) have no fix available. These packages come with the base image. We did not write them and we cannot fix them ourselves. We can patch them one by one and keep patching, or we can wait for the community to publish fixes, and for the 708 findings without a fix we do not know when that will happen.
+
+**What to think about next.** We fixed everything that we own, and the image is still not clean. So we ask a new question: **what if we start from a secure image?** A secure image from Chainguard has the same open-source software, but with far fewer vulnerabilities, and it does not depend on the community to fix them. In the next section, we build the same fixed application with a Chainguard image. We keep the same single-stage build, so only the base image changes. The difference in the scan shows how much the secure image helps.
+
+---
