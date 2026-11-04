@@ -1,6 +1,6 @@
 # Software Supply Chain Security Demo
 
-> See software supply chain security in action. We follow one small web application from its source code to a running service. We check the code, package it, find and fix its vulnerabilities, move to hardened images to shrink the attack surface, then sign it, store it in a private registry and run it on Kubernetes. Everything runs on an environment that we build on AWS.
+> See software supply chain security in action. We follow one small web application from its source code to a running service. We check the code, package it, find and fix its vulnerabilities, move to secure images to shrink the attack surface, then sign it, store it in a private registry and run it on Kubernetes. Everything runs on an environment that we build on AWS.
 
 
 ---
@@ -36,15 +36,15 @@ In simple words, this is what we do:
 1. We **check the code first**, before we build anything. We scan our own code and the libraries it uses. This is the "shift left" idea of DevSecOps.
 2. We build the application as it is, with an old open-source image, and we scan it. In production, this work is normally done by a CI/CD pipeline, and this build would never happen. The pipeline would stop at the code check in step 1, because it finds critical issues and vulnerabilities. In this demo, we build anyway, on purpose and without a pipeline, to learn what the scanners find in an image.
 3. We **fix** the code and the libraries, move to a newer open-source image, rebuild, and scan again. Some vulnerabilities will remain.
-4. We switch to a **hardened image** based on `chainguard` images. Before we use it, we check who built it: we verify its signature and read its SBOM (a list of everything inside the image). Then we build and scan again.
-5. We reduce the attack surface further with a **multi-stage build**. We build the application in a development image, `chainguard -dev` images, and we run it in a minimal, distroless image. We scan and compare all the results.
+4. We switch to a **secure image** from `Chainguard`. Before we use it, we check who built it: we verify its signature and read its SBOM (a list of everything inside the image). Then we build and scan again.
+5. We reduce the attack surface further with a **multi-stage build**. We build the application in the `Chainguard` development image (the `-dev` variant), and we run it in a minimal, distroless `Chainguard` image. We scan and compare all the results.
 6. We run the final image as a standalone container.
 7. We create SBOMs, store all the images in a private registry that scans images, sign the final image, and set rules that block images that are not safe.
 8. We deploy the final image to a Kubernetes cluster and expose it to the public.
 
 The application and the exercise come from a `chainguard` repository. It contains a small web application written in Go, and its libraries have known vulnerabilities. To understand the exercise in more detail, please check this repository: [chainguard-technical-challenge](https://github.com/maligin/chainguard-technical-challenge).
 
-For the hardened images, we use the container images from `Chainguard`. We compare them with the open-source images, to see what a hardened base changes.
+For the secure images, we use the container images from `Chainguard`. We compare them with the open-source images, to see what a secure base changes.
 
 To do all this in a realistic setting, we also build an environment on AWS using a Terraform script. The Terraform script creates a private and a public network, one work machine (the `bastion`), and a small Kubernetes cluster with three nodes (one `master` node and two `worker` nodes) running `RKE2`. A load balancer is the public entry point. On the cluster, we install Harbor, an open-source private registry, and later we deploy the application. You can find more details in the [Infrastructure](#infrastructure) section.
 
@@ -54,11 +54,11 @@ To do all this in a realistic setting, we also build an environment on AWS using
 
 ## Strategy
 
-> **The idea in one sentence**
+> **The idea in one paragraph**
 
-We check the code first, then we find out where the vulnerabilities come from, remove them in steps, scan after every step, and prove that the final image can be trusted.
+In this demo, we want to understand and show the value of **secure images**, **multi-stage builds** and **distroless images**. We also want to understand the full idea of **software supply chain security**: where vulnerabilities can come from, how to find them, and how to reduce them. What we do is simple. We take a small Go application from the [Chainguard Technical Challenge repository](https://github.com/maligin/chainguard-technical-challenge). It is a web application, built with the Gin framework, and it only answers "Hello World!". We follow it from source code to a running service. We check the code first. Then we find out where the vulnerabilities come from, and we remove them in steps. We scan after every step. At the end, we prove that the final image can be trusted, and we run it on Kubernetes.
 
-### Why we start with the code: shift left
+> **Why we start with the code: shift left**
 
 Think of the path of an application as a line from left to right. We write the code, we build it, we package it into an image, we store the image, and we run it. The "left" is the start of this line.
 
@@ -66,7 +66,7 @@ If you find a security problem at the left, it is cheap to fix. You change a lin
 
 This is why we start with the code, and not with an image.
 
-### What do we check in the code?
+> **What do we check in the code?**
 
 We check two things.
 
@@ -75,13 +75,15 @@ We check two things.
 
 Our application is very small, so there is almost no code of our own to check. Most of the risk is in the libraries. A SAST tool alone would miss this. This is why we use both kinds of check.
 
-### What happens in a real pipeline, and what we do here
+> **What happens in a real environment, and what we do here**
 
-In a real company, the code goes through a CI/CD pipeline. The first jobs of the pipeline scan, check and test the code. If a check fails, the pipeline stops, and the image is never built.
+In the real world, nobody builds and checks images by hand. The team uses a CI/CD pipeline, built with tools such as Jenkins, GitLab CI or GitHub Actions.
 
-In this demo, we do something different on purpose. We check the code, we see the problems, and then we **build anyway**. The reason is learning. We want to see what the same problems look like inside an image, and which new problems the image adds, for example the ones that come from the base image. After that, we fix everything and build again, so you can see the difference.
+It works like this. A developer writes code and pushes it to a Git repository, for example GitHub. The developer then makes a commit or opens a merge request. This starts the pipeline automatically (in most cases). The pipeline scans the code, checks it and tests it. If all the checks pass, it builds the container image from the source code. If a check fails, the pipeline stops.
 
-### Where do vulnerabilities come from?
+In this demo, we do not use a pipeline. We do every step by hand. The reason is simple. This is a demo to show value and to learn, and we want to see every step and every result.
+
+> **Where do vulnerabilities come from?**
 
 A container image is made of layers, and each layer comes from a different place. For our Go application, a vulnerability can come from four places:
 
@@ -92,7 +94,7 @@ A container image is made of layers, and each layer comes from a different place
 
 When we scan an image, the scanner tells us the type of each finding (operating system package, Go library, Go standard library). So even when we change several things at once, we can still see which part each change helped.
 
-### The images we build
+> **The images we build**
 
 We build four images. They tell the story in order, and we change one thing at a time where we can.
 
@@ -100,46 +102,41 @@ We build four images. They tell the story in order, and we change one thing at a
 |:---|:---|:---|:---|:---|:---|
 | `hello-oss-single-v1` | Original | 1.18 (old) | Old open-source Go image | Single-stage | The starting point: problems from the code, the libraries, Go and the base image. |
 | `hello-oss-single-v2` | Fixed | Current | Current open-source Go image | Single-stage | What fixing the code, the libraries and the image gives us. |
-| `hello-cg-single` | Fixed | Current | Hardened Go development image | Single-stage | What changes when only the base image changes. |
-| `hello-cg-multi` | Fixed | Current | Hardened Go development image to build, hardened minimal image to run | Multi-stage | What changes when only the build style changes. |
+| `hello-cg-single` | Fixed | Current | secure `Chainguard` Go development image | Single-stage | What changes when only the base image changes. |
+| `hello-cg-multi` | Fixed | Current | secure `Chainguard` Go development image to build, secure `Chainguard` minimal image to run | Multi-stage | What changes when only the build style changes, and the attack surface becomes as small as possible. |
 
 Look at the pairs. Between `v2` and `cg-single`, the only change is the base image. Between `cg-single` and `cg-multi`, the only change is the build style. This is why the comparisons are fair.
 
-### Why a hardened image?
+> **Why a secure image?**
 
-After we fix our code and update everything, some findings will remain in the open-source image. We cannot fix them by updating, for example because no fix exists yet. So what can we do?
+After we fix our code and update everything, some findings remain in the open-source image. We cannot remove them by updating, for example because no fix exists yet. So what can we do? We have three options.
 
-We can reduce how much is in the image. Every package in an image is a possible vulnerability. If our application needs only one file to run, why should the image carry a shell, a package manager and hundreds of tools? A hardened image has only what the application needs. This makes the attack surface small. It also means fewer findings and less patching work.
+- **Option 1: fix it ourselves.** We find the issue, fix it, and patch the image. This takes time and skill for every finding. It also moves our image away from the open-source version. This is called drift. We now own the patch, and we must keep it working.
+- **Option 2: wait for the open-source community.** We wait until the community releases a fix. We do not control when this happens. Until then, we run with the vulnerability.
+- **Option 3: use a secure image.** A secure image provider takes the same open-source software and builds it from source. It keeps the image as small as it can, and it fixes vulnerabilities without waiting for the community. We get the same open source with as few CVEs as possible. We have no patches to maintain, and no drift.
 
-A hardened single-stage image will improve the CVE count, but some CVEs can remain, because it still carries the build tools. The next step is to remove them.
+In this demo, we use option 3, with the images from `Chainguard`. We compare them with the open-source images to see the difference.
 
-### Why a multi-stage build?
+A secure single-stage image improves the CVE count, but some CVEs can remain, because it still carries the build tools. The next step is to remove them.
+
+> **Why a multi-stage build?**
 
 A single-stage image builds and runs the application in the same image. So the compiler and the build tools travel to production, and the application does not need them to run.
 
 A **multi-stage** build splits the work. The first stage is a development image. It has the compiler and the tools, and it builds the application. The last stage is a minimal, distroless image. It has almost nothing in it. We copy only the finished application into it, and we change nothing else. The final image has no compiler, no shell and no package manager, so the attack surface is much smaller.
 
-### Check before you use: who built this image?
+> **Check before you use: who built this image?**
 
-Before we use an image that someone else built, we should ask three questions. Who built it? Was it changed on the way? What is inside it? The hardened images are signed, and they publish an SBOM. So before every hardened build, we pull the image, check the signature with Cosign, and read its SBOM. Only then do we build. We also pin the image by its digest, which is a fingerprint, so we build on exactly the image that we checked.
+Before we use an image that someone else built, we should ask three questions. Who built it? Was it changed on the way? What is inside it? The secure images are signed, and they publish an SBOM. So before every secure build, we pull the image, check the signature with Cosign, and read its SBOM. Only then do we build. We also pin the image by its digest, which is a fingerprint, so we build on exactly the image that we checked.
 
-### Four stages for the work
-
-We do the work in four stages.
-
-* **Stage 1: the code.** We check the code and the libraries before we build.
-* **Stage 2: the images, with standard tools on the bastion.** We use command-line tools to build, scan, run and create SBOMs. Anyone can repeat the work with them.
-* **Stage 3: the registry.** We move the images to Harbor. Harbor scans images, stores SBOMs and signatures, and can block images that break our rules. After that, we compare the Harbor results with the Stage 2 results.
-* **Stage 4: the cluster.** We deploy the final image to Kubernetes and expose it to the public.
-
-## How we read the results
+> **How we read the results**
 
 * **Two scanners, not one.** Scanners use different databases and different rules, so they can give different numbers. We use two and compare them.
 * **Reachability.** A scanner lists everything that is installed. It does not say if the program really uses the vulnerable code. We use a Go tool to check this, so we can tell which findings matter most.
-* **Fixable or not.** For every finding, we ask: is there a fixed version? If yes, we update. If no, we cannot fix it by updating, and we must think about removing the package or using a smaller image.
+* **Fixable or not.** For every finding, we ask: is there a fixed version? If yes, we update. If no, we cannot fix it by updating, and we must think about using a secure image or a smaller image.
 * **Evidence.** We save the raw scan files, the date of each scan, and the version of each tool. Vulnerability data changes every day, so numbers can differ from one day to the next. Saved evidence lets us explain our numbers later.
 
-### The tools and why we use them
+> **The tools and why we use them**
 
 | Tool | What it does | Why we use it |
 |:---|:---|:---|
@@ -150,6 +147,7 @@ We do the work in four stages.
 | **local-path-provisioner** | Gives the cluster simple disk storage on the nodes. | Harbor needs disk space to store images. |
 | **Ingress controller** | One entry door for web traffic into the cluster. | Harbor and our application can share one public entry point. |
 | **Harbor** | Open-source private container registry. | It stores images, scans them, shows SBOMs and signatures, and can enforce rules. |
+| **Chainguard images** | Secure open-source container images, rebuilt often and published with a signature and an SBOM. | The same open source with as few CVEs as possible, without waiting for the community to ship fixes. |
 | **gosec** | SAST tool for Go. Reads our code and warns about risky patterns. | Checks our own code before we build. |
 | **govulncheck** | Official Go tool. Checks if vulnerable code is really used. | It separates findings that matter from findings that are only listed. |
 | **Trivy** | Open-source scanner for code, images and Kubernetes files. | Checks libraries in the code, scans images, and checks our Kubernetes files. Harbor uses Trivy too, so we can compare. |
@@ -157,7 +155,7 @@ We do the work in four stages.
 | **Docker** | Builds and runs container images. | The most common tool for this work, and it works the same everywhere. |
 | **Hadolint** | Checks a Dockerfile for common mistakes. | Catches bad habits before we build. |
 | **Syft** | Creates an SBOM from an image. | An SBOM tells us exactly what is inside an image. |
-| **Cosign** | Signs and verifies images and SBOMs. | We use it to check the signature and the SBOM of the hardened images before we use them, and to sign our own final image. |
+| **Cosign** | Signs and verifies images and SBOMs. | We use it to check the signature and the SBOM of the secure images before we use them, and to sign our own final image. |
 | **jq** | Reads and filters JSON files. | Scan results are JSON, and jq helps us count and compare them. |
 
 ---
