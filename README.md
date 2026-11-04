@@ -319,6 +319,9 @@ When the instances start, a cloud-init script runs on each of them. On the basti
 
 ```bash
 cloud-init status --wait
+# If status is failed, you can use the below commands to check failuer
+# cloud-init status --long
+# sudo tail -60 /var/log/cloud-init-output.log
 ```
 
 > Expect: status: done
@@ -423,24 +426,128 @@ When they are ready, open `https://<your-harbor-fqdn>` in your browser, accept t
 
 ![harbor-ui](Images/harbor-ui.png)
 
-## Step 12: Expose Harbor with the ingress
+## Stop and start the environment
 
-> **PLACEHOLDER:** this step is completed after the ingress is configured. It will cover: the ingress controller and class, the Harbor host name (FQDN), the Helm values for exposing Harbor, the `helm upgrade` command, and a test that the Harbor login page opens.
+If you are not using the environment and do not want to destroy it, you can stop the instances to save cost. You have two options:
 
-## Stop, start and clean up
+* Stop the instances from the AWS console.
+* Use the start and stop scripts in the `start-stop-scripts/` folder of this repository. The Terraform script already created a file with the values that the scripts need and saved it in this folder, next to the scripts. The scripts read the values from this file, so you do not need to enter anything. The stop script stops all the instances for you. When you come back and want to continue, run the start script.
 
-The NAT gateway and the load balancer cost money every hour, even if you do not use them. Two scripts in the `start-stop-scripts/` folder stop and start all the EC2 instances. Run them from the `Terraform/` folder on your laptop, with the same AWS credentials.
+Run the scripts from your laptop, with the same AWS credentials that you used for Terraform.
+
+> **Note:** Stopping the instances saves the cost of the servers only. The NAT gateway, the load balancer and the Elastic IPs keep costing money every hour, even when the instances are stopped. If you will not use the environment for a long time, destroy it (see the last section) and create it again later.
 
 ```bash
-chmod +x ../start-stop-scripts/*.sh
-../start-stop-scripts/ec2-power-off.sh   # stop all instances
-../start-stop-scripts/ec2-power-on.sh    # start them again
+cd start-stop-scripts
+chmod +x *.sh
+.ec2-power-off.sh   # stop all instances
+.ec2-power-on.sh    # start them again
 ```
 
-Stopping the instances saves compute cost only. The NAT gateway, the load balancer, the disks and the public IP addresses are still billed. When you are finished with the environment, remove everything:
+## Clean up
+
+When you are done with the demo and want to delete everything, run the Terraform destroy command from the `Terraform/` folder on your laptop:
 
 ```bash
 terraform destroy
 ```
+
+Terraform shows what it will delete and asks you to confirm. Type `yes`. This removes the whole environment from AWS: the instances, the network, the load balancer and the NAT gateway. Everything inside the cluster is deleted too, including Harbor and all the images in it. After it finishes, check the AWS console to make sure that nothing is left, so that you do not pay for a forgotten resource.
+
+---
+
+> ###################################
+> SSCS DEMO START HERE - STEP-BY-STEP
+> ###################################
+
+---
+
+## SSCS Demo Activity - Step-By-Step
+
+Now that the environment is up and running, we can start the demo. This is the main part of this guide. Here, we go through the activity that was described at the beginning. We do it in stages, and each stage focuses on one point, as explained before. Each stage has the steps that you need to complete its activity. In each step, we explain what we do and why we do it. We also look at the result, and think about what it means before we move to the next step.
+
+> Note: Unless a step says otherwise, **run all commands on the bastion**.
+
+---
+
+## Section 1: Prepare the bastion and the application
+
+Before we touch the application, we need our tools, our code and a clear place to keep our work. We do this once.
+
+### Step 1.1: Install the tools
+
+We need Docker to build images, and open-source tools for scanning, SBOMs and signing: Grype, Trivy, Syft and Cosign. We also install `jq` to read JSON files. The code scanners (gosec and govulncheck) run inside a Go container, so we do not install them.
+
+```bash
+sudo apt-get update && sudo apt-get install -y docker.io jq
+sudo usermod -aG docker $USER && newgrp docker
+
+curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sudo sh -s -- -b /usr/local/bin
+curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
+curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+curl -sSfL -o cosign https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64 && sudo install cosign /usr/local/bin/cosign && rm cosign
+
+docker --version && grype --version && syft --version && trivy --version && cosign version | grep GitVersion
+```
+
+![section-1-step-1](Images/section-1-step-1.png)
+
+### Step 1.2: Get the code
+
+We create a working folder called `demo`. Then we clone the public exercise repository, which has the Go application, and we copy the application into the `app` folder. This is our original copy, and we do not change it. We need it for the "before" results.
+
+```bash
+mkdir demo && cd demo
+git clone https://github.com/maligin/chainguard-technical-challenge.git challenge-repo
+cp -r challenge-repo/go app
+mkdir -p Dockerfiles reports/code Manifests Images
+```
+
+From now on, we work in the folder `~/demo`.
+
+### Step 1.3: Look at the application
+
+Before we check anything, let us see what we have.
+
+```bash
+cat app/main.go
+cat app/go.mod
+```
+
+The application is very small. It starts a web server with the Gin framework and answers `Hello World!` on port 8080. Now look at `go.mod`. It lists the libraries the application uses. There is one **direct** dependency, which is Gin (version 1.8.1). All the others are marked `// indirect`. They are libraries that Gin needs, and Gin needs libraries that need other libraries. Look at the versions. Many are from 2021 and 2022. Software that is this old often has known bugs. This is where we expect to find problems.
+
+### Step 1.4: Create a scan helper
+
+We will scan several images in this guide. Every scan should follow the same rules, so the results can be compared. So we write one small script and use it every time. It runs both scanners, saves the raw results, and prints a count by severity.
+
+```bash
+cat > scan.sh <<'EOF'
+#!/usr/bin/env bash
+
+set -euo pipefail
+IMAGE="$1"; NAME="$2"; OUT="reports/$NAME"
+mkdir -p "$OUT"
+
+# Scan with both scanners and keep the raw JSON and a readable table
+grype "$IMAGE" -o json  > "$OUT/grype.json"
+grype "$IMAGE" -o table > "$OUT/grype.txt"
+trivy image --quiet --format json --output "$OUT/trivy.json" "$IMAGE"
+trivy image --quiet "$IMAGE" > "$OUT/trivy.txt"
+
+# Print the number of findings for each severity
+echo "== Grype: $NAME =="
+jq -r '[.matches[].vulnerability.severity] | group_by(.) | map("\(.[0]): \(length)") | .[]' "$OUT/grype.json"
+echo ""
+echo "--------------------------"
+echo ""
+echo "== Trivy: $NAME =="
+jq -r '[.Results[]?.Vulnerabilities[]?.Severity] | group_by(.) | map("\(.[0]): \(length)") | .[]' "$OUT/trivy.json"
+echo ""
+echo "--------------------------"
+EOF
+chmod +x scan.sh
+```
+
+If a scanner finds nothing for a severity, that severity does not appear in the count. If nothing is printed under a scanner, it found nothing.
 
 ---
