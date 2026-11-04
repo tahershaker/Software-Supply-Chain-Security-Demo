@@ -162,7 +162,7 @@ Before we use an image that someone else built, we should ask three questions. W
 
 ---
 
-# High-Level Steps and Actions
+## High-Level Steps and Actions
 
 This is a short overview of what we do and why we do it. The detailed commands are in the [Step-By-Step](#step-by-step) section.
 
@@ -189,5 +189,54 @@ This is a short overview of what we do and why we do it. The detailed commands a
 **11. Sign the final image and enforce rules:** We sign the final image and its SBOM with Cosign, verify them, and set rules in the registry: no unsigned images, and no images with serious vulnerabilities. | *Why:* A signature shows who made the image and that nobody changed it, but it does not say the image is safe. So we combine it with the vulnerability check. In this demo, we want to show trust that you can prove: an image can run only if we know who made it and it passed our scan.
 
 **12. Deploy to Kubernetes and expose to the public:** We deploy the signed image from Harbor with safe settings, check the Kubernetes files for mistakes, and make the application reachable from the internet. | *Why:* The same checks must work in a real cluster, and a new application should follow the same safe path from day one. In this demo, we want to prove the full path, from source code to a running service.
+
+---
+
+## Infrastructure
+
+To follow the application from source code to a running service, we need three things: a place to build and check images, a place to run them, and a place to keep them. So we build a small environment on AWS.
+
+![High-level architecture](Images/demo-architecture.png)
+
+> **PLACEHOLDER:** add the high-level architecture picture here. It should show one VPC, a public subnet (bastion, load balancer, NAT gateway), a private subnet (1 master node and 2 worker nodes), and the traffic flow.
+
+## What each part is used for
+
+| Part | What it is used for |
+|:---|:---|
+| **Bastion** | The only machine with SSH access from the internet. It is also our work desk. We check the code, build container images, run the scanners, create SBOMs, sign images, and run `kubectl` and Helm from here. A Linux machine with a fixed setup makes our work repeatable. |
+| **Kubernetes master node** | The control plane of the cluster. It decides where applications run and keeps the state of the cluster. |
+| **Kubernetes worker nodes (2)** | They run the workloads: Harbor and, later, our application. |
+| **Harbor** | Deployed on Kubernetes with Helm. It is our private registry. It stores our images, scans them for vulnerabilities, shows SBOMs and signatures, and can block images that break our rules. |
+| **Local storage provisioner** | Gives the cluster disk space from the nodes. Harbor needs it to store images and its database. |
+| **Ingress controller** | One entry door for web traffic into the cluster. It sends traffic to Harbor or to our application, based on the name in the request. |
+| **Network Load Balancer** | The public entry point. It receives traffic on ports 80 and 443 and sends it to the nodes. |
+| **NAT gateway** | Lets the private nodes reach the internet (for example, to download images), without being reachable from the internet. |
+
+The traffic flow is simple. A request comes from the internet to the load balancer. The load balancer sends it to the ingress controller on a node. The ingress controller sends it to Harbor or to the application.
+
+## Components created by Terraform
+
+| Component | Count | Details |
+|:---|:---|:---|
+| VPC | 1 | `10.10.0.0/16` |
+| Subnets | 2 | Public `10.10.10.0/24` and private `10.10.20.0/24`, in one availability zone |
+| Internet gateway | 1 | Internet access for the public subnet |
+| NAT gateway | 1 | Outbound-only internet access for the private subnet |
+| Elastic IPs | 3 | For the NAT gateway, the load balancer and the bastion |
+| Route tables | 2 | One for each subnet |
+| Security groups | 2 | One for the public subnet and one for the private subnet |
+| Network Load Balancer | 1 | Internet-facing, with listeners on ports 80 and 443 |
+| EC2 instances | 4 | 1 bastion (`t3.medium`, 100 GB disk), 1 master (`t3.medium`), 2 workers (`t3.xlarge`). Nodes have 100 GB disks. |
+| SSH key pair | 1 | Created by Terraform. You do not need to bring your own key. |
+| RKE2 | 3 nodes | Installed and configured automatically on the master and the two workers |
+
+These are the default values of the Terraform script.
+
+## How it is deployed
+
+The environment is deployed by the Terraform script in the `Terraform/` folder of this repository. For more information about this Terraform, please refer to [Kubernetes-Hands-On-Demo-On-AWS / 01-Provision](https://github.com/tahershaker/Kubernetes-Hands-On-Demo-On-AWS/tree/main/01-Provision).
+
+The Terraform in this repository is based on the one in that link. We made some edits. The main one is a cloud-init script that installs and configures RKE2 automatically on the three cluster nodes. It also installs `kubectl` and Helm on the bastion.
 
 ---
