@@ -12,7 +12,7 @@
 * [High-Level Steps and Actions](#high-level-steps-and-actions) - what we do, why we do it, and the business value of each action.
 * [Infrastructure](#infrastructure) - what we build on AWS, and what each part is used for.
 * [Deploying the Environment](#deploying-the-environment) - build the AWS environment, check it, and install Harbor.
-* [Step-By-Step](#step-by-step) - the full guide, section by section.
+* [Step-By-Step](#sscs-demo-activity---step-by-step) - the full guide, section by section.
 * [References](#references) - links for further reading.
 
 ---
@@ -38,9 +38,8 @@ In simple words, this is what we do:
 3. We **fix** the code and the libraries, move to a newer open-source image, rebuild, and scan again. Some vulnerabilities will remain.
 4. We switch to a **secure image** from `Chainguard`. Before we use it, we check who built it: we verify its signature and read its SBOM (a list of everything inside the image). Then we build and scan again.
 5. We reduce the attack surface further with a **multi-stage build**. We build the application in the `Chainguard` development image (the `-dev` variant), and we run it in a minimal, distroless `Chainguard` image. We scan and compare all the results.
-6. We run the final image as a standalone container.
-7. We create SBOMs, store all the images in a private registry that scans images, sign the final image, and set rules that block images that are not safe.
-8. We deploy the final image to a Kubernetes cluster and expose it to the public.
+6. We create SBOMs, store all the images in a private registry that scans images, and sign the final image.
+7. We deploy the final image to a Kubernetes cluster and expose it to the public.
 
 The application and the exercise come from a `chainguard` repository. It contains a small web application written in Go, and its libraries have known vulnerabilities. To understand the exercise in more detail, please check this repository: [chainguard-technical-challenge](https://github.com/maligin/chainguard-technical-challenge).
 
@@ -150,21 +149,18 @@ Before we use an image that someone else built, we should ask three questions. W
 | **Chainguard images** | Secure open-source container images, rebuilt often and published with a signature and an SBOM. | The same open source with as few CVEs as possible, without waiting for the community to ship fixes. |
 | **gosec** | SAST tool for Go. Reads our code and warns about risky patterns. | Checks our own code before we build. |
 | **govulncheck** | Official Go tool. Checks if vulnerable code is really used. | It separates findings that matter from findings that are only listed. |
-| **Trivy** | Open-source scanner for code, images and Kubernetes files. | Checks libraries in the code, scans images, and checks our Kubernetes files. Harbor uses Trivy too, so we can compare. |
+| **Trivy** | Open-source scanner for code and images. | Checks libraries in the code and scans images. Harbor uses Trivy too, so we can compare. |
 | **Grype** | Open-source vulnerability scanner. | The second scanner for images. It can also scan an SBOM without the image. |
 | **Docker** | Builds and runs container images. | The most common tool for this work, and it works the same everywhere. |
-| **Hadolint** | Checks a Dockerfile for common mistakes. | Catches bad habits before we build. |
 | **Syft** | Creates an SBOM from an image. | An SBOM tells us exactly what is inside an image. |
 | **Cosign** | Signs and verifies images and SBOMs. | We use it to check the signature and the SBOM of the secure images before we use them, and to sign our own final image. |
 | **jq** | Reads and filters JSON files. | Scan results are JSON, and jq helps us count and compare them. |
 
 ---
 
----
-
 ## High-Level Steps and Actions
 
-This is a short overview of what we do and why we do it. The detailed commands are in the [Step-By-Step](#step-by-step) section.
+This is a short overview of what we do and why we do it. The detailed commands are in the [Step-By-Step](#sscs-demo-activity---step-by-step) section.
 
 **1. Build the environment:** We use Terraform to create a network, a work machine, a Kubernetes cluster and a registry. | *Why:* Code-based environments are repeatable, easy to review and quick to create again. In this demo, we need a realistic place to build, store and run the images, and we want anyone to be able to repeat it.
 
@@ -180,15 +176,13 @@ This is a short overview of what we do and why we do it. The detailed commands a
 
 **7. Reduce the attack surface with a multi-stage build:** We build the application in a development image and run it in a minimal, distroless image. We check this image the same way, then scan and compare everything. | *Why:* The compiler and the build tools are not needed to run the application. Every extra tool is a possible vulnerability and a possible tool for an attacker. In this demo, we want to show how much smaller the attack surface becomes when only the finished application is left in the final image.
 
-**8. Run the final image with safe settings:** We run it as a standalone container, with a non-root user, a read-only file system and no extra Linux powers. | *Why:* Even a good image can have a bug that nobody knows yet, so we limit what an attacker can do. This is the "least privilege" idea. In this demo, we want to prove that the final image runs correctly with these tight settings.
+**8. Create SBOMs:** We create a Software Bill of Materials (SBOM) for each image. It is a list of every package, library and tool inside the image, with their versions. | *Why:* You cannot protect what you cannot see. With the list, you can match every item to a vulnerability database, such as the NVD, which publishes each new CVE with its severity and, when available, the fix. When the next big vulnerability is announced, you can answer "are we affected?" in minutes. In this demo, we want to show how an SBOM makes this possible, and that it can be scanned again later without the image.
 
-**9. Create SBOMs:** We create a Software Bill of Materials (SBOM) for each image. It is a list of every package, library and tool inside the image, with their versions. | *Why:* You cannot protect what you cannot see. With the list, you can match every item to a vulnerability database, such as the NVD, which publishes each new CVE with its severity and, when available, the fix. When the next big vulnerability is announced, you can answer "are we affected?" in minutes. In this demo, we want to show how an SBOM makes this possible, and that it can be scanned again later without the image.
+**9. Store the images in a private registry and scan again:** We push the images to Harbor, which scans them and keeps the results in one place. We compare Harbor's results with our own scans. | *Why:* The registry is the gate between building and running, so it is the best place to check images and to enforce rules. In this demo, we want to show a central view of risk, and a second, independent scan to compare with our own.
 
-**10. Store the images in a private registry and scan again:** We push the images to Harbor, which scans them and keeps the results in one place. We compare Harbor's results with our own scans. | *Why:* The registry is the gate between building and running, so it is the best place to check images and to enforce rules. In this demo, we want to show a central view of risk, and a second, independent scan to compare with our own.
+**10. Sign the final image:** We sign the final image and its SBOM with Cosign, and verify them. | *Why:* A signature shows who made the image and that nobody changed it, but it does not say the image is safe. So we combine it with the vulnerability check. In this demo, we want to show trust that you can prove: we know who made the final image, and it passed our scan.
 
-**11. Sign the final image and enforce rules:** We sign the final image and its SBOM with Cosign, verify them, and set rules in the registry: no unsigned images, and no images with serious vulnerabilities. | *Why:* A signature shows who made the image and that nobody changed it, but it does not say the image is safe. So we combine it with the vulnerability check. In this demo, we want to show trust that you can prove: an image can run only if we know who made it and it passed our scan.
-
-**12. Deploy to Kubernetes and expose to the public:** We deploy the signed image from Harbor with safe settings, check the Kubernetes files for mistakes, and make the application reachable from the internet. | *Why:* The same checks must work in a real cluster, and a new application should follow the same safe path from day one. In this demo, we want to prove the full path, from source code to a running service.
+**11. Deploy to Kubernetes and expose to the public:** We deploy the signed image from Harbor with safe settings, and make the application reachable from the internet. | *Why:* The same checks must work in a real cluster, and a new application should follow the same safe path from day one. In this demo, we want to prove the full path, from source code to a running service.
 
 ---
 
@@ -260,7 +254,7 @@ To use the Terraform script, you need the following tools installed and configur
 * **Git**.
 * **Outbound internet access**, so Terraform can download its providers.
 
-Steps 1 to 5 run on your laptop. Steps 6 to 12 run on the bastion.
+Steps 1 to 5 run on your laptop. Steps 6 to 10 run on the bastion.
 
 ## Step 1: Clone this repository
 
@@ -319,7 +313,7 @@ When the instances start, a cloud-init script runs on each of them. On the basti
 
 ```bash
 cloud-init status --wait
-# If status is failed, you can use the below commands to check failuer
+# If status is failed, you can use the below commands to check failure
 # cloud-init status --long
 # sudo tail -60 /var/log/cloud-init-output.log
 ```
@@ -356,7 +350,7 @@ kubectl get pods -A
 
 ![nodes-ready](Images/nodes-ready.png)
 
-## Step 10: Install the local storage provisioner
+## Step 9: Install the local storage provisioner
 
 Harbor needs disk space for its images and its database. RKE2 does not give us a storage class by default. So we install a small component that creates disk space on a node when an application asks for it. Then we make it the default.
 
@@ -375,7 +369,7 @@ kubectl get storageclass
 
 > The data lives on the disk of the node. If the node is replaced, the data is lost. This is fine for a demo.
 
-## Step 11: Install Harbor with Helm
+## Step 10: Install Harbor with Helm
 
 Helm is the package manager of Kubernetes. A Helm chart is a ready-made package. The Harbor team publishes a chart, so we add their repository and install from it.
 
@@ -602,9 +596,9 @@ trivy fs app/ | tee reports/code/trivy-fs-before.txt
 
 ![section-2-step-3](Images/section-2-step-3.png)
 
-Trivy found **64 vulnerabilities** in `go.mod`: 32 HIGH, 27 MEDIUM and 5 UNKNOWN, with no CRITICAL or LOW. The full output is saved in `Scan-Outputs/trivy-fs-before.txt`.
+Trivy found **64 vulnerabilities** in `go.mod`: 32 HIGH, 27 MEDIUM and 5 UNKNOWN, with no CRITICAL or LOW. The full output is saved in [trivy-fs-before](/Scan-Outputs/code/trivy-fs-before.txt)
 
-To read the table, look at four columns for each row: the library, the severity, the installed version and the fixed version. Here, all 64 findings sit in six libraries, and every one has a fixed version available. Most come from the old `golang.org/x/*` libraries, mainly `x/crypto` and `x/net`, so updating those libraries removes most of the findings. The full output table is saved in the file [trivy-fs-before,txt](/Scan-Outputs/code/trivy-fs-before.txt)
+To read the table, look at four columns for each row: the library, the severity, the installed version and the fixed version. Here, all 64 findings sit in six libraries, and every one has a fixed version available. Most come from the old `golang.org/x/*` libraries, mainly `x/crypto` and `x/net`, so updating those libraries removes most of the findings.
 
 Trivy and govulncheck find almost the same vulnerable versions: 64 for Trivy and 63 for govulncheck. The difference is what they do next. Trivy stops at the list. govulncheck checks whether the code calls the vulnerable function, and only **11 of its 63** are reachable (the other 8 are in imported packages and 44 in required modules that the code does not call). So Trivy tells us what is installed, and govulncheck tells us what to fix first.
 
@@ -614,7 +608,7 @@ Trivy and govulncheck find almost the same vulnerable versions: 64 for Trivy and
 
 | Check | Tool | What it looks at | Result |
 |:---|:---|:---|:---|
-| SAST | gosec | Our own code | `<N>` issue(s) (G104: unhandled error) |
+| SAST | gosec | Our own code | `1` issue(s) (G104: unhandled error) |
 | SCA (reachability) | govulncheck | Libraries that our code calls | 63 found, **11 reachable**, all in `golang.org/x/net` |
 | SCA (all libraries) | Trivy | Every library in `go.mod` | **64 found**: 32 HIGH, 27 MEDIUM, 5 UNKNOWN, 0 CRITICAL |
 
@@ -640,7 +634,7 @@ We need to fix these findings. The goal is that our application does not ship an
 - **Fix:** Update the libraries to the fixed versions: `gin` 1.9.1, `golang.org/x/crypto` (latest), `golang.org/x/net` 0.62.0, `golang.org/x/sys` 0.44.0, `golang.org/x/text` 0.41.0 and `google.golang.org/protobuf` 1.33.0. One `go get -u ./...` followed by `go mod tidy` does this.
 - **Cost:** Low to medium, for the same reason: rebuild and test. The bigger cost is that this work never ends. New CVEs appear every month, so we must repeat it.
 
-In a real pipeline, the story would stop here. The pipeline would fail, and nobody would build the image until the problems are fixed. In this demo, we continue on purpose, only to learn. We will **not fix yet**. We want to see the full picture first, then fix everything in one go in Step 5.
+In a real pipeline, the story would stop here. The pipeline would fail, and nobody would build the image until the problems are fixed. In this demo, we continue on purpose, only to learn. We will **not fix yet**. We want to see the full picture first, then fix everything in one go in Section 5.
 
 ---
 
@@ -716,7 +710,7 @@ The first run downloads the scanner databases, so it can take a minute.
 
 ![section-4-step-1](Images/section-4-step-1.png)
 
-The scan is long, so we read it in three steps. The full tables are saved in [oss-single-v1-grype](/Scan-Outputs/oss-single-v1/grype.txt) and [oss-single-v1-trivy](/Scan-Outputs/oss-single-v1/trivy.txt). To read the Grype table on the server, run:
+The scan is long, so the full tables are saved in [oss-single-v1-grype](/Scan-Outputs/oss-single-v1/grype.txt) and [oss-single-v1-trivy](/Scan-Outputs/oss-single-v1/trivy.txt).
 
 | Image | Scanner | Critical | High | Medium | Low | Other |
 |:---|:---|:---|:---|:---|:---|:---|
@@ -727,7 +721,7 @@ The same small application now has thousands of findings, and our own code did n
 
 Each row in the Grype table is one finding. Look at four columns for each row: the **package**, the **installed version**, the **fixed-in version** and the **severity**. Two things stand out:
 
-- Most rows are operating system packages (type `deb`), and not Go libraries. About nine in ten rows come from the Debian base image.
+- Most rows are operating system packages (type `deb`), and not Go libraries. About four in five rows come from the Debian base image.
 - Almost half of the rows have an empty fixed-in column. For these, no fixed version exists yet, so updating the package cannot fix them.
 
 Trivy shows a much bigger number than Grype. The reason is the way it counts. Trivy scans every Go program inside the image, and the Go compiler and its tools are all there. Each of them is counted again with the same Go standard library bugs. This is another sign that the image carries tools our application does not need.
@@ -834,7 +828,7 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/app-fixed:/src"
 
 ![section-5-step-2-1](Images/section-5-step-2-1.png)
 
-gosec now reports **0 issues**, down from `<N>` before: the unhandled error (G104) is fixed, because the program now checks and logs the error from `r.Run()`.
+gosec now reports **0 issues**, down from 1 before: the unhandled error (G104) is fixed, because the program now checks and logs the error from `r.Run()`.
 
 **Check the code with govulncheck SCA**
 
@@ -848,7 +842,7 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD/app-fixed:/src"
 
 govulncheck now reports **0 vulnerabilities that our code can reach**, down from 11 before. It found 1 more vulnerability in a module we require, but our code does not call it, so it is not a risk to the application. Before, it found 63 in total (11 reachable, 8 in packages we import and 44 in modules we require).
 
-**Check the code with tirvy SCA**
+**Check the code with Trivy SCA**
 
 ```bash
 trivy fs app-fixed/ | tee reports/code/trivy-fs-after.txt
@@ -862,11 +856,11 @@ Trivy now reports **1 finding**, down from 64: `golang.org/x/crypto` (GO-2026-59
 
 | Check | Tool | Before | After |
 |:---|:---|:---|:---|
-| SAST | gosec | `<N>` issue(s) | **0** issues |
+| SAST | gosec | 1 issue(s) | **0** issues |
 | SCA (reachability) | govulncheck | 63 found, **11 reachable** | 1 found, **0 reachable** |
 | SCA (all libraries) | Trivy | **64** findings | **1** finding (UNKNOWN) |
 
-The fixes worked. Our code has no issues, and no vulnerability can be reached by our application. One finding remains, in `golang.org/x/crypto` (GO-2026-5932). It is about the `openpgp` package, which our code does not use. Its fix exists only as a pre-release version, so we do not take it, and we note it as a known item.
+The fixes worked. Our code has no issues, and no vulnerability can be reached by our application. The one finding that remains is the `golang.org/x/crypto` item above, and we note it as a known item.
 
 ### Step 5.4: Write the Dockerfile for the new version
 
@@ -1012,7 +1006,7 @@ The output has three parts that matter:
 - **The digest matches.** `docker-manifest-digest` is the same digest that we pinned, so the signature is for exactly this image.
 - **Chainguard built it.** `githubWorkflowRepository` is `chainguard-images/images`, and the workflow is `release.yaml` on the `main` branch. It ran in GitHub Actions (the `Issuer` field), so the build was automatic and public. Nobody built this image by hand.
 
-> Note: The command above pins the exact subject and issuer that we expect, so the check fails for any other signer. This is how it should be done in a real environment. If you only want to see who signed the image, without pinning them, use this command. It accepts any signer and prints the subject first and the issuer second. |*| Use this one only to find out who signed. It is not a trust check, because it would pass for any signer.
+> Note: The command above pins the exact subject and issuer that we expect, so the check fails for any other signer. This is how it should be done in a real environment. If you only want to see who signed the image, without pinning them, use this command. It accepts any signer and prints the subject first and the issuer second. Use this one only to find out who signed. It is not a trust check, because it would pass for any signer.
 
 ```bash
 cosign verify \
@@ -1053,7 +1047,7 @@ The SBOM was downloaded and saved, and it lists **380 packages** in the developm
 
 ### Step 7.4: Write the Dockerfile
 
-Now we build. The Dockerfile takes the pinned digest as a build argument. In a single-stage build, we build and run in the same image. We compile with `CGO_ENABLED=0`, so the binary is fully static.
+Now we build. The Dockerfile uses the pinned digest in the `FROM` line. In a single-stage build, we build and run in the same image. We compile with `CGO_ENABLED=0`, so the binary is fully static.
 
 ```bash
 cat > Dockerfiles/Dockerfile.3-cg-single <<'EOF'
@@ -1064,6 +1058,8 @@ RUN CGO_ENABLED=0 go build -o hello-server .
 ENTRYPOINT ["/app/hello-server"]
 EOF
 ```
+
+> The digest in the `FROM` line is the one from our run. Chainguard rebuilds its images often, so an older digest may no longer be available. Replace it with the value of your own `$GO_DEV_REF` from Step 7.1.
 
 ### Step 7.5: Build and test
 
@@ -1094,13 +1090,6 @@ You should see `Hello World!`.
 ![section-8-step-1](Images/section-8-step-1.png)
 
 The secure image brought the findings down from **1,200 to 1** in Grype and from **2,175 to 1** in Trivy, a drop of more than 99.9%. The code, the libraries and the build are exactly the same as in `hello-oss-single-v2`. Only the base image changed, and we did not patch a single package ourselves. The full tables are in [cg-single-grype](/Scan-Outputs/cg-single/grype.txt) and [cg-single-trivy](/Scan-Outputs/cg-single/trivy.txt).
-
-The two remaining findings are different, and each scanner sees only one of them:
-
-- **Grype** reports one High finding in the image itself: `sqlite-libs` (CVE-2026-119586), with no fix yet. Its chance of being exploited (EPSS) is low, at 0.8%.
-- **Trivy** reports no finding in the operating system at all. Its one finding is in our own program: the `golang.org/x/crypto` `openpgp` item that we already knew from Section 5 and decided to accept.
-
-This is the value of a trusted image. We verified who built it and read its SBOM before we used it. The vendor rebuilds it often from source, so we are no longer waiting for the community to fix the 708 findings that had no fix. We start from a clean base, we know what is inside it, and what is left is a short list that we can read and explain.
 
 ### Step 8.2: See which part improved
 
@@ -1182,6 +1171,8 @@ ENTRYPOINT ["/usr/bin/hello-server"]
 EOF
 ```
 
+> The two digests are the ones from our run. Replace each `FROM` image with your own `$GO_DEV_REF` (Step 7.1) and `$STATIC_REF` (Step 9.1), because an older digest may no longer be available.
+
 ### Step 9.3: Build and test
 
 ```bash
@@ -1222,7 +1213,7 @@ jq -r '[.matches[].artifact.type] | group_by(.) | map("\(.[0]): \(length)") | .[
 
 ![section-10-step-2](Images/section-10-step-2.png)
 
-The command prints nothing. This is the result we want: Grype found no vulnerability, so there is no package type to count. The full output is in `Scan-Outputs/cg-multi/grype.txt` and `Scan-Outputs/cg-multi/trivy.txt`.
+The command prints nothing. This is the result we want: Grype found no vulnerability, so there is no package type to count.
 
 | Package type | `v1` | `v2` | `cg-single` | `cg-multi` |
 |:---|:---|:---|:---|:---|
@@ -1256,3 +1247,341 @@ One finding remains in Trivy: the `golang.org/x/crypto` `openpgp` item, in our o
 
 ---
 
+## Section 11: Create and use SBOMs
+
+We now have an image we trust more. But how do we prove what is inside it, and how do we answer questions about it later? Imagine a new vulnerability is announced tomorrow in a library. Your manager asks: "Are we affected?" You do not want to scan everything again. You want a list that says what is in each image. This list is an **SBOM**, a Software Bill of Materials. In Section 7 we read the SBOM of the publisher. Now we create the SBOMs of our own images.
+
+### Step 11.1: Create the SBOMs
+
+We create one SBOM for each image, in the SPDX format, which is a standard format that many tools can read.
+
+```bash
+mkdir -p reports/sbom
+for n in oss-single-v1 oss-single-v2 cg-single cg-multi; do
+  syft hello-$n:1.0 -q -o spdx-json=reports/sbom/hello-$n.spdx.json
+done
+ls -lh reports/sbom
+```
+
+![section-11-step-1](Images/section-11-step-1.png)
+
+The four SBOM files are saved in [SBOM Folder](/Scan-Outputs/sbom/). Note the size: the `hello-cg-multi` SBOM is 914 KB, against 11 MB for the open-source images, because the final image contains far fewer packages.
+
+### Step 11.2: Ask a question from the SBOMs
+
+Now the "are we affected?" question. Imagine that a new vulnerability is announced in `golang.org/x/net`, and all versions before v0.60.0 are affected. Which of our images contain this library, and which version? We answer it from the SBOM files only. We do not need the images.
+
+```bash
+for n in oss-single-v1 oss-single-v2 cg-single cg-multi; do
+  echo -n "hello-$n: "
+  jq -r '[.packages[] | select(.name=="golang.org/x/net") | .versionInfo] | join(",")' reports/sbom/hello-$n.spdx.json
+done
+```
+
+![section-11-step-2](Images/section-11-step-2.png)
+
+Only `hello-oss-single-v1` is affected. It contains `golang.org/x/net` v0.0.0-20210226172049-e18ecbb05110, an old version from 2021. The other three images contain v0.62.0, which is newer than v0.60.0, so they are not affected. We got this answer from four SBOM files in a few seconds, without scanning or starting a single image. In a real company, you would run the same question over hundreds of SBOMs.
+
+### Step 11.3: Scan from an SBOM
+
+An SBOM is also an input for a scanner. We can scan without the image. This is useful when you only have the list, for example from a supplier.
+
+```bash
+grype sbom:reports/sbom/hello-cg-multi.spdx.json
+```
+
+![section-11-step-3](Images/section-11-step-3.png)
+
+The result shows 1 finding: the `golang.org/x/crypto` `openpgp` item that we already know from Section 5. In Section 10, Grype found 0 on the image itself. The difference comes from what each scan reads. The SBOM is only a list of packages and versions, so the scanner matches every package at module level, with less context than a scan of the image. This is the trade-off of scanning from an SBOM: it is fast and needs no image, but it has less context, so it can show more findings.
+
+---
+
+## Section 12: Store the images in Harbor, then sign and attach the SBOM
+
+We now have four images and their SBOMs on the bastion. The next stop is a registry. A registry is the gate between building and running. Every image passes through it, so it is a good place to scan again, to see the results in one place, and to check who signed what. We push all four images to Harbor, compare its scan with ours, and then sign the final image and attach its SBOM.
+
+### Step 12.1: Make Docker trust the Harbor certificate
+
+Harbor is installed with a self-signed certificate, so Docker does not trust it by default. To push images, we save the Harbor address in a variable, add the Harbor certificate to the trusted certificates of the server, and restart Docker so it reads them.
+
+```bash
+# Harbor address (run this line again if you open a new terminal)
+export HARBOR=<harbor-fqdn>
+
+# Download the Harbor certificate and add it to the trusted certificates of the server
+openssl s_client -connect $HARBOR:443 -servername $HARBOR </dev/null 2>/dev/null \
+  | openssl x509 | sudo tee /usr/local/share/ca-certificates/harbor.crt > /dev/null
+sudo update-ca-certificates
+
+# Restart Docker so it reads the new certificate
+sudo systemctl restart docker
+```
+
+> This trusts the certificate for the whole server, not only for Docker. It is fine for a demo, but in a real environment you would use a certificate from a trusted authority.
+
+### Step 12.2: Create a project in Harbor
+
+In Harbor, images live in projects. We create a public project called `demo`, with scanning on every push already turned on. We use the Harbor API for this. The `-k` option tells `curl` to skip the certificate check, because the certificate is self-signed.
+
+```bash
+curl -k -u admin:'<harbor-admin-password>' -X POST "https://$HARBOR/api/v2.0/projects" \
+  -H 'Content-Type: application/json' \
+  -d '{"project_name":"demo","public":true,"metadata":{"auto_scan":"true"}}'
+```
+
+### Step 12.3: Push all the images
+
+We push all four images, not only the best one. Harbor scans them all when they arrive, so we can compare them.
+
+```bash
+docker login $HARBOR -u admin
+
+for n in oss-single-v1 oss-single-v2 cg-single cg-multi; do
+  docker tag hello-$n:1.0 $HARBOR/demo/hello-$n:1.0
+  docker push $HARBOR/demo/hello-$n:1.0
+done
+```
+
+![section-12-step-3](Images/section-12-step-3.png)
+
+### Step 12.4: Compare Harbor with the standard tools
+
+In the Harbor web page, open **Projects**, then **demo**. You will see the four repositories. Open each one and look at the vulnerabilities column. Harbor uses Trivy inside, so its numbers should be close to our Trivy numbers.
+
+![section-12-step-4-1](Images/section-12-step-4-1.png)
+
+![section-12-step-4-2](Images/section-12-step-4-2.png)
+
+![section-12-step-4-3](Images/section-12-step-4-3.png)
+
+| Image | Harbor total | Trivy total (Section 10) |
+|:---|:---|:---|
+| `hello-oss-single-v1` | 12,234 | 14,199 |
+| `hello-oss-single-v2` | 2,169 | 2,175 |
+| `hello-cg-single` | 1 | 1 |
+| `hello-cg-multi` | 1 | 1 |
+
+Harbor and our own Trivy scan agree closely. For three of the four images, the numbers are the same or almost the same. Only `hello-oss-single-v1` shows a bigger gap (12,234 against 14,199). Harbor scans the images by itself when they arrive, and it confirms that the final image has 1 finding, against 12,234 for the first image.
+
+Look at the `Signed` and `SBOM` columns too. All four images show as not signed and with no SBOM. Harbor scans the images when they arrive, but it cannot create a signature, and it only has an SBOM when one is added. In the next step, we sign the final image and attach its SBOM.
+
+### Step 12.5: Sign the final image and attach its SBOM
+
+We sign the final image and attach its SBOM. We do this after the push, because the signature and the SBOM are stored in Harbor next to the image, and they point to the exact digest that was pushed. We sign with a key pair. The private key stays on the bastion, and the public key lets anyone check the signature.
+
+
+```bash
+# Create a key pair (no password, for the demo). This creates cosign.key and cosign.pub
+COSIGN_PASSWORD="" cosign generate-key-pair
+
+# The exact image that Harbor holds, written with its digest
+REF=$HARBOR/demo/hello-cg-multi@$(docker inspect --format '{{index .RepoDigests 0}}' $HARBOR/demo/hello-cg-multi:1.0 | cut -d@ -f2)
+echo $REF
+
+# Sign the image
+COSIGN_PASSWORD="" cosign sign --key cosign.key --yes $REF
+
+# Attach the SBOM from Section 11 (signed, as an attestation)
+COSIGN_PASSWORD="" cosign attest --key cosign.key --type spdxjson \
+  --predicate reports/sbom/hello-cg-multi.spdx.json --yes $REF
+
+# Check the signature with the public key
+cosign verify --key cosign.pub $REF
+```
+
+> Never put `cosign.key` in the repository. Only `cosign.pub` can be shared.
+
+Refresh the Harbor page. The `Signed` column of `hello-cg-multi` now shows a tick, and the other three images stay unsigned.
+
+
+The `SBOM` column still shows **No SBOM**. This is expected. That column only shows an SBOM that Harbor creates itself. The SBOM that we attached with Cosign is stored next to the image, but Harbor does not show it there. So we also let Harbor generate its own SBOM. Select the `hello-cg-multi` artifact and click **GENERATE SBOM**. When it finishes, the `SBOM` column shows a link, **SBOM Details**. It opens the list of packages, with a **DOWNLOAD SBOM** button.
+
+![section-12-step-5](Images/section-12-step-5.png)
+
+If you want to get back the SBOM that we attached, use Cosign. The first command checks its signature, and the others download it and count the packages:
+
+```bash
+# Check the signature of the SBOM with our public key
+cosign verify-attestation --key cosign.pub --type spdxjson $REF > /dev/null
+
+# Download the SBOM from Harbor and save it as a file
+cosign download attestation --predicate-type=https://spdx.dev/Document $REF \
+  | jq -r .payload | base64 -d | jq .predicate > reports/sbom/hello-cg-multi-from-harbor.spdx.json
+
+# Count the packages in the SBOM
+jq '.packages | length' reports/sbom/hello-cg-multi-from-harbor.spdx.json
+```
+
+The count should match the SBOM that we made in Section 11.
+
+---
+
+## Section 13: Deploy to Kubernetes and check
+
+We now have a signed image in Harbor. The last step is to run it on the cluster, make it reachable from outside, and check it. The cluster pulls the image from Harbor, and Traefik, the ingress controller of RKE2, exposes the application. The traffic reaches Traefik from the AWS load balancer, and Traefik sends it to our service.
+
+### Step 13.1: Trust the Harbor certificate on every cluster node
+
+This is easy to miss. When pods pull images from Harbor, it is containerd on each node, and not Docker on the bastion, that does the certificate check. Harbor uses a self-signed certificate, so without this step every pod that uses a Harbor image fails with `ImagePullBackOff` and a certificate error. We reuse the certificate file that we saved on the bastion in Step 12.1. Because the `demo` project is public, the nodes need no password to pull.
+
+From the bastion, set these variables first. Change them to the private IP addresses of your nodes, the path to your SSH key, and the user name that you use to log in to the nodes. Then run the commands below them as they are.
+
+```bash
+export MASTER_IP=<master-ip>
+export WORKER1_IP=<worker-01-ip>
+export WORKER2_IP=<worker-02-ip>
+export SSH_KEY=<path-to-your-key.pem>
+export NODE_USER=<node-user>
+
+# Copy the Harbor certificate to every node and trust it
+for NODE_IP in $MASTER_IP $WORKER1_IP $WORKER2_IP; do
+  scp -i $SSH_KEY /usr/local/share/ca-certificates/harbor.crt $NODE_USER@${NODE_IP}:/tmp/harbor-ca.crt
+  ssh -i $SSH_KEY $NODE_USER@${NODE_IP} \
+    "sudo cp /tmp/harbor-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates"
+done
+
+# Restart RKE2 so that its containerd reads the new certificate (master first, then the workers)
+ssh -i $SSH_KEY $NODE_USER@$MASTER_IP "sudo systemctl restart rke2-server"
+ssh -i $SSH_KEY $NODE_USER@$WORKER1_IP "sudo systemctl restart rke2-agent"
+ssh -i $SSH_KEY $NODE_USER@$WORKER2_IP "sudo systemctl restart rke2-agent"
+```
+
+The restart briefly interrupts `kubectl logs` and `kubectl exec` connections to that node, not the pods themselves. It is safe for a demo, but do it before you present.
+
+### Step 13.2: The manifest
+
+The file `K8s/deployment.yaml` in this repository holds everything that Kubernetes needs: a namespace, a Deployment that runs the image, a Service that gives it a stable address inside the cluster, and an Ingress that exposes it through Traefik. We run the image by its digest, the same one that we signed, so the cluster runs exactly the image that we checked. The security settings in the Deployment keep the running container as small a target as the image: it runs as a normal user, its file system is read-only, and it has no special Linux powers.
+
+The file has two values that are hard-coded for this demo:
+
+* **The image:** `harbor.54.247.13.100.nip.io/demo/hello-cg-multi@sha256:8a368b4a...` is our Harbor address and the digest of the signed image.
+* **The host name:** `hello.54.247.13.100.nip.io` follows the same pattern as Harbor: `hello.<load-balancer-ip>.nip.io`.
+
+Change them to match your own demo. You can print the image value with `echo $REF` (Step 12.5), and the load balancer IP is the one in your Harbor address.
+
+**Action:** copy the content of `K8s/deployment.yaml` from this repository, and create the file on the bastion, in the `~/demo/Manifests` folder, with the same name. Change the two values while you do it:
+
+```bash
+vi ~/demo/Manifests/deployment.yaml
+```
+
+### Step 13.3: Deploy
+
+Run this from the `~/demo` folder.
+
+```bash
+kubectl apply -f Manifests/deployment.yaml
+kubectl -n hello rollout status deployment/hello
+kubectl -n hello get pods,svc,ingress
+```
+
+![section-13-step-3](Images/section-13-step-3.png)
+
+The pod should reach `Running`. If it stays in `ImagePullBackOff`, the node cannot pull from Harbor, so check Step 13.1 on the node where the pod runs.
+
+### Step 13.4: Check the application from outside
+
+Open a web browser and go to `https://<app-host>`, for example `https://hello.54.247.13.100.nip.io`. The browser shows a certificate warning, because Traefik uses its own self-signed certificate. Accept it. You should see `Hello World!`.
+
+![section-13-step-4-1](Images/section-13-step-4-1.png)
+
+Now check that the running container is as small as we expect. We try to open a shell inside it:
+
+```bash
+kubectl -n hello exec deploy/hello -- sh
+```
+
+![section-13-step-4-2](Images/section-13-step-4-2.png)
+
+This should fail, because there is no shell in the image. An attacker who reaches this container has no shell and no package manager to use.
+
+### Step 13.5: Troubleshoot a container that has no shell
+
+The failed `exec` shows the trade-off of a small image. There is no shell, so there is also no easy way to look inside when something goes wrong. We do not add a shell to the image. Instead, Kubernetes can start a copy of the pod with a temporary **debug container** added. The debug container brings its own shell and tools, and our application image stays small and untouched.
+
+First we find the name of the pod.
+
+```bash
+kubectl -n hello get pods
+```
+
+Then we start the debug container with `kubectl debug`. We do not add it to the running pod. Instead, `--copy-to` makes a copy of the pod with the debug container inside, so the real pod is not touched, and the copy receives no traffic. Use the pod name from the previous command in place of `<pod-name>`.
+
+```bash
+kubectl -n hello debug -it <pod-name> --image=cgr.dev/chainguard/busybox:latest --copy-to=hello-debug -- sh
+```
+
+![section-13-step-5](Images/section-13-step-5.png)
+
+You now have a shell inside the copy. Run `ps` to list the processes. You can see our application, because the debug container shares the process space of the pod:
+
+```bash
+ps
+```
+
+![section-13-step-5-1](Images/section-13-step-5-1.png)
+
+Type `exit` to leave. Then delete the copy. The original pod was never touched, and it keeps serving traffic the whole time:
+
+```bash
+kubectl -n hello delete pod hello-debug
+```
+
+This is the way to troubleshoot in production. The image that we run never gets a shell, and nothing changes on the real pod. A person with access to the cluster can still look inside, with tools that they bring themselves.
+
+---
+
+## Section 14: Summary of findings
+
+We followed one small application from source code to a running service, and we scanned at every stage. The main result is simple. Most of the risk was not in our code. It was in the base image that we chose.
+
+### 14.1 What we found
+
+| Image | Base | Grype | Trivy | Signed, SBOM attached in Harbor |
+|:---|:---|:---|:---|:---|
+| `hello-oss-single-v1` | `golang:1.18`, single-stage | 2,342 | 14,199 | No |
+| `hello-oss-single-v2` | `golang:latest`, single-stage, fixed code | 1,200 | 2,175 | No |
+| `hello-cg-single` | Chainguard `go`, single-stage | 1 | 1 | No |
+| `hello-cg-multi` | Chainguard `go` to build, Chainguard `static` to run | **0** | **1** | Yes |
+
+We created an SBOM for all four images in Section 11. Only the final image is signed and has its SBOM attached in Harbor. The one Trivy finding that remains is the `golang.org/x/crypto` `openpgp` item in our own program. Our code does not use that package, so we accepted it.
+
+Three points stand out:
+
+1. **Our own code was a small part of the problem.** gosec found 1 issue in our code (G104), and it was a one-line fix. The libraries carried more: govulncheck found 63 findings, and only 11 were reachable from our code. One library update removed them.
+2. **The base image was the large part.** In `hello-oss-single-v1`, 78% of the Grype findings (1,824 of 2,342) were operating system packages. Only 400 were Go modules and 118 were the binary. After we fixed everything we own, all 1,200 findings that remained were in the base image. Updating our own code could never remove them.
+3. **Changing the base image did more than any code fix.** Moving from `golang` to Chainguard images took Grype from 1,200 findings to 1, with no patching on our side. The multi-stage build then removed the last Grype finding (`sqlite-libs`, which came with the development tools) and the compiler and build tools with it.
+
+### 14.2 What changed beyond the numbers
+
+A lower count is only part of the value. The Chainguard route also gave us things that the open source route did not:
+
+- **Trust in where the image comes from.** We verified the signature of the base image with Cosign before we used it. We could also download its SBOM and its attestations.
+- **Less to patch, less noise.** A team that sees 2,000 findings cannot act on them. A team that sees a few can.
+- **A smaller image with less inside.** The final image has no shell, no package manager and no compiler. It runs as non-root. An attacker who gets in has very little to use.
+- **A clear answer to "are we affected?"** With an SBOM for every image, one `jq` query on `golang.org/x/net` told us which images carry which version. We did not need to rebuild or rescan anything.
+
+### 14.3 What we learned about the tools
+
+No single scanner gives the full picture, so the tools work best together.
+
+- Grype and Trivy give different counts for the same image. They use different databases and count differently, for example Trivy counts the same Go standard library bug once per Go binary. Compare trends with the same tool, not numbers between tools.
+- `govulncheck` tells us which findings our code can really reach. This is the best filter to decide what to fix first.
+- Harbor scans on push and shows the result in the registry. Its totals were the same or close to our local Trivy results for three of the four images. The first image showed a gap (12,234 against 14,199), which we did not investigate.
+- A scan only sees what is there at scan time. The SBOM is what lets us answer new questions later, when a new CVE is published.
+
+### 14.4 What we would do next in a real pipeline
+
+The steps in this demo ran by hand. In production they belong in CI, and each one should be able to stop the build:
+
+1. Run gosec, govulncheck and Trivy on every pull request.
+2. Build with a pinned base image digest, and verify its signature before the build.
+3. Scan the image, generate the SBOM, sign and attest it, then push to the registry.
+4. Admit only signed images to the cluster, for example with an admission policy that checks the Cosign signature.
+5. Rebuild on a schedule, so that new base image fixes reach production without a code change.
+
+### 14.5 Conclusion
+
+Fixing our code was necessary, but it was not enough. The biggest gain came from the choice of base image, and from the proof that came with it: signed, with an SBOM, and small. Secure software supply chain work starts with what we build on, not only with what we write.
+
+---
