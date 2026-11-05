@@ -1,0 +1,17 @@
+Results:
+
+
+[/src/main.go:14] - G104 (CWE-703): Errors unhandled (Confidence: HIGH, Severity: LOW)
+    13: 	})
+  > 14: 	r.Run() // listen on 0.0.0.0:8080
+    15: }
+
+Autofix: 
+
+Summary:
+  Gosec  : dev
+  Files  : 1
+  Lines  : 15
+  Nosec  : 0
+  Issues : 1
+
