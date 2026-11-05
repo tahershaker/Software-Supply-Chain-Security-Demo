@@ -1585,3 +1585,14 @@ The steps in this demo ran by hand. In production they belong in CI, and each on
 Fixing our code was necessary, but it was not enough. The biggest gain came from the choice of base image, and from the proof that came with it: signed, with an SBOM, and small. Secure software supply chain work starts with what we build on, not only with what we write.
 
 ---
+
+## References
+
+* [chainguard-technical-challenge](https://github.com/maligin/chainguard-technical-challenge) - the application and the exercise.
+* [Kubernetes-Hands-On-Demo-On-AWS](https://github.com/tahershaker/Kubernetes-Hands-On-Demo-On-AWS) - the source of the Terraform script.
+* [Chainguard Academy](https://edu.chainguard.dev/) - documentation for the secure images.
+* [Sigstore and Cosign](https://docs.sigstore.dev/) - signing and verifying images and SBOMs.
+* [Harbor](https://goharbor.io/docs/) - the private registry.
+* [RKE2](https://docs.rke2.io/) - the Kubernetes distribution.
+* [Trivy](https://trivy.dev/), [Grype](https://github.com/anchore/grype) and [Syft](https://github.com/anchore/syft) - scanning and SBOMs.
+* [gosec](https://github.com/securego/gosec) and [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) - code checks for Go.
